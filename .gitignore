@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local environment files
+.env
+.env.*
+
+# Generated artifacts (directory placeholders remain tracked)
+component1/datasets/*
+component1/models/*
+component1/runs/*
+component2/datasets/*
+component2/models/*
+component2/runs/*
+component3/logs/*
+component4/models/*
+component4/data/*
+!.gitkeep
