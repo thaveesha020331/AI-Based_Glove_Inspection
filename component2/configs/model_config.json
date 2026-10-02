@@ -1,0 +1,22 @@
+
+{
+  "image_height": 224,
+  "image_width": 224,
+  "image_channels": 3,
+  "pixel_range": "0_255",
+  "size_classes": [
+    "S",
+    "M",
+    "L"
+  ],
+  "colour_classes": [
+    "Blue",
+    "White",
+    "Green"
+  ],
+  "orientation_classes": [
+    "Left",
+    "Right"
+  ],
+  "backbone_alpha": 0.35
+}

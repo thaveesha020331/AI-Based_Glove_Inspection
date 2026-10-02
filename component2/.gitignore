@@ -1,0 +1,18 @@
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+
+# Company datasets
+datasets/raw/
+datasets/processed/
+
+# Generated model weights
+models/*.keras
+models/*.h5
+
+# Experiment outputs
+runs/*
+!runs/.gitkeep
