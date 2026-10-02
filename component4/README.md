@@ -1,3 +1,81 @@
-# Component 4
+# Component 4 — GloveIQ Quality Intelligence
 
-Source code, models, and data for Component 4.
+Smart Quality Monitoring and Predictive Analytics Dashboard for the AI-based automated
+quality inspection and sorting system for rubber gloves.
+
+## Architecture
+
+```
+component4/
+├── frontend/                 # Vite + React + TypeScript SPA
+│   └── src/
+│       ├── app/              # application shell and demo data
+│       ├── components/       # reusable visual primitives
+│       ├── features/         # domain pages
+│       ├── layout/           # responsive sidebar and top navigation
+│       ├── services/         # API boundary and typed client
+│       ├── styles/            # design tokens and global styles
+│       └── types/             # shared frontend contracts
+├── backend/                  # Flask application
+│   ├── app/                  # factory, config, blueprints, models
+│   ├── analytics/            # Pandas/NumPy reporting services
+│   ├── ml/                   # Random Forest training/inference
+│   ├── repositories/         # SQLAlchemy persistence boundary
+│   └── tests/
+├── data/                     # local demo/import data
+├── models/                   # generated joblib artifacts (ignored)
+└── docs/
+```
+
+The first vertical slice is the dashboard foundation: a responsive application shell,
+overview KPIs, trend/distribution charts, batch activity, alerts, and predictive-risk
+summary. The frontend currently reads from a typed local demo service and is structured
+to switch to Flask endpoints without changing presentation components.
+
+## Initial route map
+
+| Route | Purpose |
+| --- | --- |
+| `/` | Overview dashboard |
+| `/production` | Production volume and inspection throughput |
+| `/defects` | Defect distribution and Pareto analysis |
+| `/batches` | Batch quality grades and risk |
+| `/predictions` | Predictive quality-risk analysis |
+| `/alerts` | Alerts and recommendations |
+| `/reports` | Report generation and exports |
+| `/history` | Historical inspection records |
+| `/data-management` | CSV/imported data management |
+| `/settings` | Workspace and notification settings |
+
+## Data entities
+
+- `Batch`: production batch identity, line, quantity, status, and quality grade.
+- `Inspection`: standardized inspection record received from upstream components.
+- `Defect`: normalized defect taxonomy and counts per batch/inspection.
+- `QualityPrediction`: risk score, model version, confidence, and recommended action.
+- `Alert`: severity, source, status, and acknowledgement metadata.
+
+## Dependency choices
+
+Frontend versions are pinned to stable major versions in `frontend/package.json`:
+React 18, Vite 5, TypeScript 5, Tailwind CSS 3, React Router 6, Recharts 2,
+Lucide React, Axios, React Hook Form, and Zod.
+
+Backend versions are pinned in `backend/requirements.txt`: Flask 3, Flask-CORS,
+Flask-SQLAlchemy, Flask-Migrate, PyMySQL, Pandas, NumPy, scikit-learn, Joblib,
+and Pytest. Pandas, NumPy, and scikit-learn use compatible release ranges to
+support Python 3.15 wheels on Windows.
+
+## Running locally
+
+```powershell
+cd component4\frontend
+npm install
+npm run dev
+```
+
+The dashboard opens at `http://localhost:5173`. Demo data is clearly marked in the
+interface and does not represent live factory measurements.
+
+Backend setup is documented in `backend/README.md`; the API is optional for the
+initial frontend slice.
