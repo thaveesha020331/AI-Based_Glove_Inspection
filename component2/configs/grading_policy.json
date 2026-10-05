@@ -1,0 +1,7 @@
+
+{
+  "policy_name": "DEMO_ONLY_NOT_FACTORY_APPROVED",
+  "b_max_length_deviation_mm": 2.0,
+  "c_max_length_deviation_mm": 5.0,
+  "approved_for_production": false
+}
