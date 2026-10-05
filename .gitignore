@@ -28,3 +28,7 @@ component3/logs/*
 component4/models/*
 component4/data/*
 !.gitkeep
+
+# Backend local databases and runtime files
+component4/backend/*.db
+component4/backend/instance/
