@@ -23,6 +23,14 @@ def create_app(test_config: dict | None = None) -> Flask:
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         MAX_CONTENT_LENGTH=int(os.getenv("MAX_UPLOAD_BYTES", 5 * 1024 * 1024)),
         FRONTEND_ORIGIN=os.getenv("FRONTEND_ORIGIN", "http://localhost:5173"),
+        PREDICTIVE_MODEL_DIR=os.getenv("PREDICTIVE_MODEL_DIR"),
+        QUALITY_REJECTION_THRESHOLD=float(os.getenv("QUALITY_REJECTION_THRESHOLD", "5")),
+        REJECT_GRADE_THRESHOLD=float(os.getenv("REJECT_GRADE_THRESHOLD", "5")),
+        RISK_LOW_PROBABILITY=float(os.getenv("RISK_LOW_PROBABILITY", "0.33")),
+        RISK_HIGH_PROBABILITY=float(os.getenv("RISK_HIGH_PROBABILITY", "0.66")),
+        PREDICTIVE_RANDOM_STATE=int(os.getenv("PREDICTIVE_RANDOM_STATE", "42")),
+        PREDICTIVE_N_ESTIMATORS=int(os.getenv("PREDICTIVE_N_ESTIMATORS", "300")),
+        PREDICTIVE_MIN_RECORDS=int(os.getenv("PREDICTIVE_MIN_RECORDS", "8")),
     )
     if test_config:
         app.config.update(test_config)

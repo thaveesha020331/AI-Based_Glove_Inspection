@@ -2,6 +2,7 @@
 
 import io
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,8 @@ from app.models import (
     QualityAlert, QualityRecord, ReportRecord, SortingRecord,
 )
 from app.models.entities import model_to_dict
+from app.services.analytics import AnalyticsService, AnalyticsThresholds
+from app.services.predictive_risk import PredictiveRiskService, RiskConfig, build_batch_frame
 
 api_v1_bp = Blueprint("api_v1", __name__)
 
@@ -39,6 +42,10 @@ def error(message, code="validation_error", status=400, details=None):
     if details:
         body["details"] = details
     return jsonify({"error": body}), status
+
+
+def _safe_rate(numerator, denominator):
+    return round(float(numerator) / float(denominator) * 100, 2) if denominator else None
 
 
 def parse_date(value, field):
@@ -91,6 +98,44 @@ def audit(action, entity_type, entity_id, details=None):
     db.session.add(AuditLog(action=action, entity_type=entity_type, entity_id=str(entity_id), details=details or {}))
 
 
+def analytics_service():
+    """Build analytics from the persistent source tables for this request."""
+    return AnalyticsService(
+        ProductionRecord.query.all(),
+        InspectionRecord.query.all(),
+        QualityRecord.query.all(),
+        SortingRecord.query.all(),
+        AnalyticsThresholds(
+            rejection_rate=float(current_app.config.get("QUALITY_REJECTION_THRESHOLD", 5.0)),
+            sorting_failure_rate=float(current_app.config.get("SORTING_FAILURE_THRESHOLD", 5.0)),
+            defect_increase_percent=float(current_app.config.get("DEFECT_INCREASE_THRESHOLD", 25.0)),
+        ),
+    )
+
+
+def predictive_risk_service():
+    model_dir = current_app.config.get("PREDICTIVE_MODEL_DIR") or str(
+        Path(current_app.root_path).parent.parent / "models"
+    )
+    return PredictiveRiskService(model_dir, RiskConfig(
+        rejection_threshold=float(current_app.config.get("QUALITY_REJECTION_THRESHOLD", 5.0)),
+        reject_grade_threshold=float(current_app.config.get("REJECT_GRADE_THRESHOLD", 5.0)),
+        low_probability=float(current_app.config.get("RISK_LOW_PROBABILITY", 0.33)),
+        high_probability=float(current_app.config.get("RISK_HIGH_PROBABILITY", 0.66)),
+        random_state=int(current_app.config.get("PREDICTIVE_RANDOM_STATE", 42)),
+        n_estimators=int(current_app.config.get("PREDICTIVE_N_ESTIMATORS", 300)),
+        min_training_records=int(current_app.config.get("PREDICTIVE_MIN_RECORDS", 8)),
+    ))
+
+
+def predictive_frame():
+    return build_batch_frame(
+        ProductionRecord.query.all(), Batch.query.all(), InspectionRecord.query.all(),
+        QualityRecord.query.all(), SortingRecord.query.all(),
+        predictive_risk_service().config,
+    )
+
+
 @api_v1_bp.get("/health")
 def health():
     try:
@@ -104,13 +149,10 @@ def health():
 
 @api_v1_bp.get("/dashboard/summary")
 def dashboard_summary():
-    production = db.session.query(func.coalesce(func.sum(ProductionRecord.production_quantity), 0)).scalar()
-    inspected = db.session.query(func.coalesce(func.sum(ProductionRecord.inspected_quantity), 0)).scalar()
-    rejected = db.session.query(func.coalesce(func.sum(ProductionRecord.rejected_quantity), 0)).scalar()
-    batches = db.session.query(func.count(Batch.batch_id)).scalar()
-    reject_rate = float(np.divide(rejected, inspected)) if inspected else 0.0
-    return response({"production_quantity": int(production), "inspected_quantity": int(inspected),
-                     "rejected_quantity": int(rejected), "rejection_rate": reject_rate, "batch_count": int(batches)})
+    data = analytics_service().descriptive()
+    data["batch_count"] = Batch.query.count()
+    return response({**data["kpis"], "batch_count": data["batch_count"],
+                     "data_quality_warnings": data["warnings"]})
 
 
 def _trend(timestamp_column, quantity_column=None):
@@ -126,7 +168,39 @@ def _trend(timestamp_column, quantity_column=None):
 @api_v1_bp.get("/dashboard/trends")
 @api_v1_bp.get("/analytics/trends")
 def dashboard_trends():
-    return response(_trend(ProductionRecord.production_timestamp, ProductionRecord.production_quantity))
+    try:
+        service = analytics_service()
+        series = service.trends(request.args.get("granularity", "daily"),
+                                request.args.get("start_date"), request.args.get("end_date"))
+        if request.args.get("compare", "false").lower() == "true":
+            return response({"series": series, "comparison": service.compare_period(
+                request.args.get("granularity", "daily"),
+                request.args.get("start_date"), request.args.get("end_date")),
+                "data_quality_warnings": service.warnings})
+        return response(series)
+    except ValueError as exc:
+        return error(str(exc))
+
+
+@api_v1_bp.get("/analytics/descriptive")
+def descriptive_analytics():
+    """Return calculated KPIs, distributions, batch summaries and quality notes."""
+    return response(analytics_service().descriptive())
+
+
+@api_v1_bp.get("/analytics/decision-support")
+def decision_support():
+    """Return threshold warnings without creating duplicate persistent alerts."""
+    service = analytics_service()
+    warnings = service.warnings_for_decision_support()
+    active = {
+        (alert.triggering_metric, alert.batch_id)
+        for alert in QualityAlert.query.filter(QualityAlert.status.in_(("Open", "Acknowledged"))).all()
+    }
+    new_warnings = [warning for warning in warnings
+                    if (warning["metric"], warning["batch_id"]) not in active]
+    return response({"warnings": new_warnings, "data_quality_warnings": service.warnings,
+                     "active_alert_count": len(active)})
 
 
 @api_v1_bp.get("/production")
@@ -275,11 +349,12 @@ def sorting_summary():
 
 @api_v1_bp.get("/analytics/quality")
 def quality_analytics():
-    rows = db.session.query(QualityRecord.quality_grade, func.count(QualityRecord.id)).group_by(QualityRecord.quality_grade).all()
-    distribution = {grade: int(count) for grade, count in rows}
-    total = sum(distribution.values())
+    data = analytics_service().descriptive()
+    distribution = data["quality"]["grade_distribution"]
+    total = data["quality"]["total_records"]
     return response({"grade_distribution": distribution, "total": total,
-                     "pass_rate": float(np.divide(distribution.get("A", 0) + distribution.get("B", 0), total)) if total else 0.0})
+                     "pass_rate": _safe_rate(distribution.get("A", 0) + distribution.get("B", 0), total),
+                     "data_quality_warnings": data["warnings"]})
 
 
 @api_v1_bp.get("/predictions")
@@ -289,6 +364,62 @@ def predictions():
         query = query.filter_by(predicted_risk_category=request.args["risk_level"])
     rows, meta = paginate(query)
     return response([model_to_dict(row) for row in rows], meta=meta)
+
+
+@api_v1_bp.get("/predictions/status")
+def predictions_status():
+    return response(predictive_risk_service().status())
+
+
+@api_v1_bp.get("/predictions/analytics")
+def predictions_analytics():
+    query = PredictionRecord.query.order_by(PredictionRecord.prediction_time.desc())
+    records = [model_to_dict(row) for row in query.all()]
+    distribution = {}
+    for record in records:
+        category = record["predicted_risk_category"]
+        distribution[category] = distribution.get(category, 0) + 1
+    return response({
+        "model": predictive_risk_service().status(),
+        "risk_distribution": distribution,
+        "history": records,
+    })
+
+
+@api_v1_bp.post("/predictions/train")
+def predictions_train():
+    service = predictive_risk_service()
+    result = service.train(predictive_frame())
+    return response(result, 200 if result.get("trained") else 422)
+
+
+@api_v1_bp.post("/predictions/predict")
+def predictions_predict():
+    payload = request.get_json(silent=True) or {}
+    batch_id = payload.get("batch_id")
+    if not batch_id:
+        return error("batch_id is required.", details={"fields": ["batch_id"]})
+    if not db.session.get(Batch, batch_id):
+        return error("Batch does not exist.", "not_found", 404)
+    result = predictive_risk_service().predict(batch_id, predictive_frame())
+    if result.get("state") != "ready":
+        return response(result, 200)
+    prediction = PredictionRecord(
+        batch_id=batch_id,
+        predicted_risk_category=result["risk_category"],
+        predicted_probability=result["risk_probability"],
+        model_version=result["model_version"] or "unknown",
+        prediction_time=parse_date(result["prediction_timestamp"], "prediction_timestamp"),
+        prediction_status="Completed",
+    )
+    db.session.add(prediction)
+    audit("create", "PredictionRecord", batch_id, {
+        "risk_category": result["risk_category"],
+        "model_version": result["model_version"],
+    })
+    db.session.commit()
+    result["prediction_id"] = prediction.id
+    return response(result, 201)
 
 
 @api_v1_bp.post("/predictions")
@@ -408,13 +539,23 @@ def import_csv():
         missing = sorted(REQUIRED_COLUMNS[kind] - set(frame.columns))
         if missing:
             return error("CSV is missing required columns.", details={"columns": missing})
+        data_quality_warnings = []
+        optional_quantity_fields = {"inspected_quantity", "accepted_quantity", "rejected_quantity"}
+        absent_quantities = sorted(optional_quantity_fields - set(frame.columns)) if kind == "production" else []
+        if absent_quantities:
+            data_quality_warnings.append({
+                "code": "missing_production_values", "fields": absent_quantities,
+                "message": "Missing quantity fields use the database schema default of zero; verify before using coverage or rate KPIs.",
+            })
         if preview:
-            return response({"columns": list(frame.columns), "rows": frame.head(10).to_dict(orient="records"), "row_count": len(frame)})
+            return response({"columns": list(frame.columns), "rows": frame.head(10).to_dict(orient="records"),
+                             "row_count": len(frame), "data_quality_warnings": data_quality_warnings})
         records = [_import_row(kind, row, index + 2) for index, row in enumerate(frame.to_dict(orient="records"))]
         db.session.add_all(records)
         audit("import", kind, None, {"rows": len(records), "filename": upload.filename})
         db.session.commit()
-        return response({"imported": len(records), "record_type": kind}, 201)
+        return response({"imported": len(records), "record_type": kind,
+                         "data_quality_warnings": data_quality_warnings}, 201)
     except (ValueError, TypeError, KeyError) as exc:
         db.session.rollback()
         return error(str(exc))
