@@ -53,3 +53,13 @@ def test_csv_preview_and_transactional_import(client):
     }, content_type="multipart/form-data")
     assert imported.status_code == 201
     assert client.get("/api/v1/data-management/summary").get_json()["data"]["production_records"] == 1
+
+
+def test_predictive_api_reports_untrained_and_insufficient_states(client, tmp_path):
+    client.application.config["PREDICTIVE_MODEL_DIR"] = str(tmp_path)
+    status = client.get("/api/v1/predictions/status")
+    assert status.status_code == 200
+    assert status.get_json()["data"]["state"] == "untrained"
+    training = client.post("/api/v1/predictions/train")
+    assert training.status_code == 422
+    assert training.get_json()["data"]["state"] == "insufficient_data"
