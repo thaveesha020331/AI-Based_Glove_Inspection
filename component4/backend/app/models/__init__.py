@@ -1,1 +1,19 @@
-"""SQLAlchemy entities for batches, inspections, defects, predictions, and alerts."""
+"""SQLAlchemy entities for the GloveIQ persistence layer."""
+
+from app.models.entities import (
+    AuditLog,
+    Batch,
+    InspectionRecord,
+    PredictionRecord,
+    ProductionRecord,
+    QualityAlert,
+    QualityRecord,
+    ReportRecord,
+    SortingRecord,
+)
+
+__all__ = [
+    "AuditLog", "Batch", "InspectionRecord", "PredictionRecord",
+    "ProductionRecord", "QualityAlert", "QualityRecord", "ReportRecord",
+    "SortingRecord",
+]
