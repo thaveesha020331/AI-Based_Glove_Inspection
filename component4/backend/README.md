@@ -63,6 +63,82 @@ Source event quantities are not copied onto `batches`; dashboard totals are
 calculated from event tables. Foreign keys, indexes, range checks, and quality-grade
 checks are enforced by SQLAlchemy and the migration.
 
+## Analytics contract
+
+`GET /api/v1/analytics/descriptive` calculates all dashboard KPIs from the
+production, inspection, quality, and sorting tables using Pandas and NumPy.
+`GET /api/v1/analytics/trends` accepts `granularity=daily|weekly|monthly`,
+`start_date`, `end_date`, and optional `compare=true`. A custom range is
+represented by the date filters with daily buckets. `GET
+/api/v1/analytics/decision-support` returns threshold warnings and does not
+duplicate an alert whose metric and batch already has an Open or Acknowledged
+alert.
+
+KPI definitions and limitations:
+
+* Production, inspected, accepted, and rejected quantities are sums of the
+  corresponding `production_records` columns. Invalid or internally
+  inconsistent rows are excluded and reported in `data_quality_warnings`.
+* Inspection coverage is `inspected_quantity / production_quantity * 100`.
+  Acceptance and rejection rates use inspected quantity as the denominator and
+  are unavailable when that denominator is zero.
+* Defect frequency counts `inspection_records` by `defect_category`. Defect
+  rate is defect events / inspected quantity * 100; defect events are not
+  assumed to be unique gloves or equal to rejected gloves.
+* Grade distribution counts `quality_records.quality_grade` and includes
+  explicit zero values for A, B, C, and Reject. Sorting success is successful
+  `sorting_records` / all sorting records; it is unavailable for an empty set.
+* Batch summaries aggregate production rows by `batch_id` and calculate each
+  batch rejection rate with the same inspected-quantity denominator.
+* Trend rows contain `period`, `date`, `value` (production quantity), the four
+  quantity totals, and period rejection/acceptance rates. A comparison is
+  returned as `unavailable` when the previous comparable period has no records.
+
+Missing, invalid, duplicate, and inconsistent records are never silently
+treated as valid analytics input. The service normalizes timestamps to UTC,
+trims categorical values, coerces numeric values only for validation, and
+returns warnings describing excluded or incomplete data.
+
+## Predictive quality-risk model
+
+The predictive module uses one row per batch and a
+`RandomForestClassifier(class_weight="balanced_subsample")`. A batch is labelled
+`high_risk` when its historical rejection rate is at least
+`QUALITY_REJECTION_THRESHOLD` (default 5%) or its Reject-grade share is at
+least `REJECT_GRADE_THRESHOLD` (default 5%). Rejected quantity and quality
+grade are label sources only and are excluded from model features. Training
+requires valid production timestamps, positive production and inspected
+quantities, at least two target classes, and both classes in chronological
+training and evaluation windows. The default minimum is eight eligible
+batches.
+
+Features include production quantity, inspection coverage, inspection event
+volume and category diversity, quality-record count and size/colour diversity,
+sorting workload/failure count, production line, and dominant size/colour.
+Sorting status and quality grade are not used as features. Training uses a
+chronological 75/25 batch split, not a shuffled split, to reduce temporal
+leakage. Evaluation reports accuracy, precision, recall, F1, confusion matrix,
+and ROC-AUC when both evaluation classes are present. It also reports a
+documented rule baseline based on low inspection coverage or elevated
+inspection-event rate.
+
+The model is persisted as Joblib plus JSON metadata in `component4/models`
+(configurable with `PREDICTIVE_MODEL_DIR`). Run:
+
+```powershell
+python -m flask --app run.py db upgrade
+curl -X POST http://127.0.0.1:5000/api/v1/predictions/train
+curl http://127.0.0.1:5000/api/v1/predictions/status
+curl -X POST http://127.0.0.1:5000/api/v1/predictions/predict `
+  -H "Content-Type: application/json" -d '{"batch_id":"B-2026-001"}'
+```
+
+Risk categories use configurable model probability thresholds:
+Low `< 0.33`, Medium `0.33–0.65`, and High `>= 0.66`. A prediction is an
+estimate, not a guarantee of future defects. The API explicitly returns
+`untrained`, `insufficient_data`, `unavailable`, or `failed` states instead of
+inventing probabilities or evaluation results.
+
 ## Test
 
 ```powershell
