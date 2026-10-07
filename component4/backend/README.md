@@ -139,6 +139,26 @@ estimate, not a guarantee of future defects. The API explicitly returns
 `untrained`, `insufficient_data`, `unavailable`, or `failed` states instead of
 inventing probabilities or evaluation results.
 
+## Alerts and reports
+
+`POST /api/v1/alerts/generate` evaluates current analytics and completed model
+predictions. Rule conditions and ML conditions are labelled separately in the
+`source` field. An active condition is deduplicated by triggering metric and
+batch until the existing alert is resolved. `GET /api/v1/alerts` supports
+`search`, `severity`, `batch_id`, `start_date`, `end_date`, and `status`;
+`GET /api/v1/alerts/summary` provides active severity counts. Alert status can
+be changed with `PATCH /api/v1/alerts/<id>` using `Open`, `Acknowledged`, or
+`Resolved`.
+
+Reports support `daily-production`, `batch-quality`, `defect-analysis`,
+`rejection-acceptance`, `historical-trend`, and `predictive-risk`. Use
+`POST /api/v1/reports/preview` with `report_type`, optional `start_date`,
+`end_date`, and `batch_id` before exporting. `POST /api/v1/reports/export`
+accepts the same fields plus `format=csv|pdf`, streams the generated file, and
+retains generation metadata in `report_records`. Exports contain measured
+database values, selected period, generation time, metrics, findings, and
+available rows; unavailable values remain explicitly empty.
+
 ## Test
 
 ```powershell
