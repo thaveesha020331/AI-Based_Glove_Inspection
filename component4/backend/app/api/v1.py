@@ -6,8 +6,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from flask import Blueprint, current_app, jsonify, request
-from sqlalchemy import func
+from flask import Blueprint, current_app, jsonify, request, send_file
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
 from app import db
@@ -18,6 +18,8 @@ from app.models import (
 from app.models.entities import model_to_dict
 from app.services.analytics import AnalyticsService, AnalyticsThresholds
 from app.services.predictive_risk import PredictiveRiskService, RiskConfig, build_batch_frame
+from app.services.decision_support import DecisionSupportService
+from app.services.reports import ReportService
 
 api_v1_bp = Blueprint("api_v1", __name__)
 
@@ -190,17 +192,16 @@ def descriptive_analytics():
 
 @api_v1_bp.get("/analytics/decision-support")
 def decision_support():
-    """Return threshold warnings without creating duplicate persistent alerts."""
-    service = analytics_service()
-    warnings = service.warnings_for_decision_support()
-    active = {
-        (alert.triggering_metric, alert.batch_id)
-        for alert in QualityAlert.query.filter(QualityAlert.status.in_(("Open", "Acknowledged"))).all()
-    }
-    new_warnings = [warning for warning in warnings
-                    if (warning["metric"], warning["batch_id"]) not in active]
-    return response({"warnings": new_warnings, "data_quality_warnings": service.warnings,
-                     "active_alert_count": len(active)})
+    """Return evidence-based recommendations without creating alerts."""
+    service = DecisionSupportService(analytics_service(), prediction_dicts())
+    return response({"warnings": service.recommendations(),
+                     "data_quality_warnings": service.analytics.warnings})
+
+
+def prediction_dicts():
+    return [model_to_dict(row) for row in PredictionRecord.query
+            .filter_by(prediction_status="Completed")
+            .order_by(PredictionRecord.prediction_time.desc()).all()]
 
 
 @api_v1_bp.get("/production")
@@ -451,10 +452,62 @@ def prediction_create():
 @api_v1_bp.get("/alerts")
 def alerts():
     query = QualityAlert.query.order_by(QualityAlert.created_at.desc())
-    if request.args.get("status"):
-        query = query.filter_by(status=request.args["status"])
+    for field in ("status", "severity", "batch_id"):
+        if request.args.get(field):
+            query = query.filter(getattr(QualityAlert, field) == request.args[field])
+    if request.args.get("search"):
+        term = f"%{request.args['search']}%"
+        query = query.filter(or_(QualityAlert.title.ilike(term),
+                                 QualityAlert.description.ilike(term),
+                                 QualityAlert.triggering_metric.ilike(term)))
+    if request.args.get("start_date"):
+        query = query.filter(QualityAlert.created_at >= parse_date(request.args["start_date"], "start_date"))
+    if request.args.get("end_date"):
+        query = query.filter(QualityAlert.created_at <= parse_date(request.args["end_date"], "end_date"))
     rows, meta = paginate(query)
-    return response([model_to_dict(row) for row in rows], meta=meta)
+    data = []
+    for row in rows:
+        item = model_to_dict(row)
+        item["source"] = "model" if row.triggering_metric == "predicted_quality_risk" else "rule"
+        data.append(item)
+    return response(data, meta=meta)
+
+
+@api_v1_bp.get("/alerts/summary")
+def alerts_summary():
+    rows = QualityAlert.query.filter(QualityAlert.status.in_(("Open", "Acknowledged"))).all()
+    counts = {severity: sum(alert.severity.casefold() == severity for alert in rows)
+              for severity in ("critical", "high", "medium", "low")}
+    return response({"active_total": len(rows), "by_severity": counts,
+                     "statuses": {status: sum(alert.status == status for alert in rows)
+                                  for status in ("Open", "Acknowledged")}})
+
+
+@api_v1_bp.post("/alerts/generate")
+def alerts_generate():
+    service = DecisionSupportService(analytics_service(), prediction_dicts())
+    active = {(alert.triggering_metric, alert.batch_id)
+              for alert in QualityAlert.query.filter(
+                  QualityAlert.status.in_(("Open", "Acknowledged"))).all()}
+    created = []
+    for item in service.recommendations():
+        key = (item["triggering_metric"], item["batch_id"])
+        if key in active:
+            continue
+        alert = QualityAlert(
+            severity=item["severity"], title=item["title"], description=item["description"],
+            batch_id=item["batch_id"], triggering_metric=item["triggering_metric"],
+            observed_value=item["observed_value"],
+            threshold_or_risk_context=item["threshold_or_risk_context"],
+            recommendation=item["recommendation"], status="Open",
+        )
+        db.session.add(alert)
+        created.append(alert)
+        active.add(key)
+    if created:
+        audit("generate", "QualityAlert", None, {"created": len(created)})
+        db.session.commit()
+    return response({"created": len(created), "skipped_duplicates": len(service.recommendations()) - len(created)})
 
 
 @api_v1_bp.patch("/alerts/<int:alert_id>")
@@ -473,8 +526,51 @@ def alert_update(alert_id):
 
 @api_v1_bp.get("/reports")
 def reports():
-    rows, meta = paginate(ReportRecord.query.order_by(ReportRecord.created_at.desc()))
+    query = ReportRecord.query.order_by(ReportRecord.created_at.desc())
+    if request.args.get("report_type"):
+        query = query.filter_by(report_type=request.args["report_type"])
+    rows, meta = paginate(query)
     return response([model_to_dict(row) for row in rows], meta=meta)
+
+
+def report_service():
+    return ReportService(analytics_service(), prediction_dicts())
+
+
+@api_v1_bp.post("/reports/preview")
+def report_preview():
+    payload = request.get_json(silent=True) or {}
+    try:
+        report = report_service().build(payload.get("report_type", ""), payload.get("start_date"),
+                                        payload.get("end_date"), payload.get("batch_id"))
+        return response(report)
+    except ValueError as exc:
+        return error(str(exc))
+
+
+@api_v1_bp.post("/reports/export")
+def report_export():
+    payload = request.get_json(silent=True) or {}
+    export_format = payload.get("format", "csv").lower()
+    if export_format not in {"csv", "pdf"}:
+        return error("format must be csv or pdf.")
+    try:
+        report = report_service().build(payload.get("report_type", ""), payload.get("start_date"),
+                                        payload.get("end_date"), payload.get("batch_id"))
+        record = ReportRecord(report_type=report["report_type"],
+                              parameters={key: payload.get(key) for key in ("start_date", "end_date", "batch_id")},
+                              status="Completed", file_reference=f"report-{report['generated_at']}")
+        db.session.add(record)
+        audit("export", "ReportRecord", report["report_type"], {"format": export_format})
+        db.session.commit()
+        if export_format == "pdf":
+            return send_file(io.BytesIO(report_service().pdf_bytes(report)), mimetype="application/pdf",
+                             as_attachment=True, download_name=f"{report['report_type']}.pdf")
+        if export_format == "csv":
+            return send_file(io.BytesIO(report_service().csv_bytes(report)), mimetype="text/csv",
+                             as_attachment=True, download_name=f"{report['report_type']}.csv")
+    except ValueError as exc:
+        return error(str(exc))
 
 
 @api_v1_bp.post("/reports")

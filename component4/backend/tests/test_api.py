@@ -3,6 +3,7 @@ from io import BytesIO
 import pytest
 
 from app import create_app, db
+from app.models import QualityAlert
 
 
 @pytest.fixture()
@@ -63,3 +64,34 @@ def test_predictive_api_reports_untrained_and_insufficient_states(client, tmp_pa
     training = client.post("/api/v1/predictions/train")
     assert training.status_code == 422
     assert training.get_json()["data"]["state"] == "insufficient_data"
+
+
+def test_alert_filters_and_status_update(client):
+    with client.application.app_context():
+        db.session.add(QualityAlert(
+            severity="high", title="Reject rate high", description="Measured",
+            batch_id=None, triggering_metric="rejection_rate", observed_value=8,
+            threshold_or_risk_context="5", recommendation="Review batch", status="Open",
+        ))
+        db.session.commit()
+    filtered = client.get("/api/v1/alerts?severity=high&status=Open")
+    assert filtered.status_code == 200
+    alert_id = filtered.get_json()["data"][0]["id"]
+    updated = client.patch(f"/api/v1/alerts/{alert_id}", json={"status": "Acknowledged"})
+    assert updated.get_json()["data"]["status"] == "Acknowledged"
+    assert client.get("/api/v1/alerts/summary").get_json()["data"]["active_total"] == 1
+
+
+def test_report_preview_and_exports(client):
+    preview = client.post("/api/v1/reports/preview", json={"report_type": "daily-production"})
+    assert preview.status_code == 200
+    csv_export = client.post("/api/v1/reports/export", json={
+        "report_type": "daily-production", "format": "csv",
+    })
+    assert csv_export.status_code == 200
+    assert csv_export.mimetype == "text/csv"
+    pdf_export = client.post("/api/v1/reports/export", json={
+        "report_type": "daily-production", "format": "pdf",
+    })
+    assert pdf_export.status_code == 200
+    assert pdf_export.data.startswith(b"%PDF")
