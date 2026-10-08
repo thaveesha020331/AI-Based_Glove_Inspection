@@ -6,7 +6,10 @@
 
 :root { font-family: "DM Sans", sans-serif; color: #132238; background: #f6f8fb; font-synthesis: none; }
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; }
+html { overflow-x: hidden; }
+body { margin: 0; min-width: 320px; overflow-x: hidden; }
 button, input { font: inherit; }
 .heading { font-family: "Manrope", sans-serif; }
 .focus-ring:focus-visible { outline: 3px solid rgba(29, 107, 143, .24); outline-offset: 2px; }
+.surface-glow { background: radial-gradient(circle at 100% 0%, rgba(29, 107, 143, .08), transparent 34%), #fff; }
+.page-grid { background-image: linear-gradient(rgba(228, 234, 241, .34) 1px, transparent 1px), linear-gradient(90deg, rgba(228, 234, 241, .34) 1px, transparent 1px); background-size: 32px 32px; }
