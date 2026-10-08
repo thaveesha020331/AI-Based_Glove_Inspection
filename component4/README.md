@@ -27,10 +27,10 @@ component4/
 └── docs/
 ```
 
-The first vertical slice is the dashboard foundation: a responsive application shell,
-overview KPIs, trend/distribution charts, batch activity, alerts, and predictive-risk
-summary. The frontend currently reads from a typed local demo service and is structured
-to switch to Flask endpoints without changing presentation components.
+The application is a responsive Flask-backed dashboard. All normal screens read from
+the versioned API through a configurable Axios client. Demo data is opt-in through the
+backend seed script and can be removed with the reset script; the frontend never falls
+back to fabricated values when the API is unavailable.
 
 ## Initial route map
 
@@ -70,12 +70,14 @@ support Python 3.15 wheels on Windows.
 
 ```powershell
 cd component4\frontend
+Copy-Item .env.example .env
 npm install
 npm run dev
 ```
 
-The dashboard opens at `http://localhost:5173`. Demo data is clearly marked in the
-interface and does not represent live factory measurements.
+The dashboard opens at `http://localhost:5173`. Set `VITE_API_BASE_URL` in `.env` when
+the Flask API is not running at its default URL. Start the backend first; an unavailable
+API is shown as an explicit connection error with a retry action.
 
-Backend setup is documented in `backend/README.md`; the API is optional for the
-initial frontend slice.
+Complete Windows PowerShell setup, API contracts, seed/reset commands, model training,
+and testing instructions are in [backend/README.md](backend/README.md).
