@@ -53,3 +53,15 @@ def test_trends_and_comparison_report_missing_previous_period():
     assert service.trends("weekly")[0]["value"] == 20
     comparison = service.compare_period("daily", "2026-01-05", "2026-01-05")
     assert comparison["status"] == "unavailable"
+
+
+def test_descriptive_exposes_anomaly_signals_from_inspection_scores():
+    result = AnalyticsService(
+        [], [row(record_id="I1", batch_id="B1",
+                  inspection_timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                  defect_category="Pinhole", defect_status="Detected",
+                  anomaly_score=0.91, confidence=0.42)], [], [],
+    ).descriptive()
+    assert {signal["code"] for signal in result["anomalies"]} == {
+        "high_anomaly_score", "low_inspection_confidence",
+    }

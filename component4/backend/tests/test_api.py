@@ -56,6 +56,20 @@ def test_csv_preview_and_transactional_import(client):
     assert client.get("/api/v1/data-management/summary").get_json()["data"]["production_records"] == 1
 
 
+def test_csv_duplicate_rows_are_rejected_before_insert(client):
+    csv_data = (
+        b"batch_id,production_timestamp,production_quantity\n"
+        b"DUP-1,2026-01-01T00:00:00Z,25\n"
+        b"DUP-1,2026-01-01T00:00:00Z,25\n"
+    )
+    result = client.post("/api/v1/data-management/import", data={
+        "file": (BytesIO(csv_data), "production.csv"),
+    }, content_type="multipart/form-data")
+    assert result.status_code == 409
+    assert "duplicate" in result.get_json()["error"]["message"].lower()
+    assert client.get("/api/v1/data-management/summary").get_json()["data"]["production_records"] == 0
+
+
 def test_predictive_api_reports_untrained_and_insufficient_states(client, tmp_path):
     client.application.config["PREDICTIVE_MODEL_DIR"] = str(tmp_path)
     status = client.get("/api/v1/predictions/status")
@@ -80,6 +94,41 @@ def test_alert_filters_and_status_update(client):
     updated = client.patch(f"/api/v1/alerts/{alert_id}", json={"status": "Acknowledged"})
     assert updated.get_json()["data"]["status"] == "Acknowledged"
     assert client.get("/api/v1/alerts/summary").get_json()["data"]["active_total"] == 1
+    reviewed = client.patch(f"/api/v1/alerts/{alert_id}", json={"status": "Under Review"})
+    assert reviewed.get_json()["data"]["status"] == "Under Review"
+
+
+def test_alert_generation_keeps_distinct_conditions_and_inclusive_date_filter(client):
+    with client.application.app_context():
+        from datetime import datetime, timezone
+        from app.models import Batch, InspectionRecord, ProductionRecord
+
+        batch = Batch(batch_id="B-ALERT", production_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                      metadata_json={})
+        db.session.add(batch)
+        db.session.add(ProductionRecord(
+            batch_id="B-ALERT", production_timestamp=datetime(2026, 1, 1, 15, tzinfo=timezone.utc),
+            production_quantity=100, inspected_quantity=100, accepted_quantity=90, rejected_quantity=10,
+            metadata_json={},
+        ))
+        for index, category in enumerate(("Pinhole", "Pinhole", "Pinhole", "Discoloration", "Discoloration", "Discoloration")):
+            db.session.add(InspectionRecord(
+                record_id=f"I-{index}", batch_id="B-ALERT", defect_category=category,
+                defect_status="Detected", inspection_timestamp=datetime(2026, 1, 1, 16, tzinfo=timezone.utc),
+                metadata_json={},
+            ))
+        db.session.commit()
+    generated = client.post("/api/v1/alerts/generate").get_json()["data"]
+    assert generated["created"] == 3
+    assert client.post("/api/v1/alerts/generate").get_json()["data"]["created"] == 0
+    with client.application.app_context():
+        from datetime import datetime, timezone
+        for alert in QualityAlert.query.all():
+            alert.created_at = datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
+        db.session.commit()
+    filtered = client.get("/api/v1/alerts?start_date=2026-01-01&end_date=2026-01-01")
+    assert len(filtered.get_json()["data"]) == 3
+    assert client.get("/api/v1/alerts?start_date=not-a-date").status_code == 400
 
 
 def test_report_preview_and_exports(client):
