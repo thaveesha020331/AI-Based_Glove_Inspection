@@ -15,7 +15,8 @@ import pandas as pd
 
 PRODUCTION_COLUMNS = ("id", "batch_id", "production_timestamp", "production_quantity",
                       "inspected_quantity", "accepted_quantity", "rejected_quantity")
-INSPECTION_COLUMNS = ("record_id", "batch_id", "inspection_timestamp", "defect_category", "defect_status")
+INSPECTION_COLUMNS = ("record_id", "batch_id", "inspection_timestamp", "defect_category", "defect_status",
+                      "anomaly_score", "confidence")
 QUALITY_COLUMNS = ("id", "batch_id", "glove_size", "colour", "orientation",
                    "length_measurement", "quality_grade", "batch_consistency_status")
 SORTING_COLUMNS = ("id", "batch_id", "sorting_timestamp", "status",
@@ -113,8 +114,16 @@ class DataPreparationService:
         return frame, warnings
 
     def inspections(self, rows: Iterable[Any]) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
-        return self.prepare(rows, INSPECTION_COLUMNS, timestamp_field="inspection_timestamp",
-                            categorical_fields=("batch_id", "defect_category", "defect_status"))
+        rows = list(rows)
+        numeric_fields = tuple(
+            field for field in ("anomaly_score", "confidence")
+            if any(getattr(row, field, None) is not None for row in rows)
+        )
+        return self.prepare(
+            rows, INSPECTION_COLUMNS, timestamp_field="inspection_timestamp",
+            categorical_fields=("batch_id", "defect_category", "defect_status"),
+            numeric_fields=numeric_fields,
+        )
 
     def quality(self, rows: Iterable[Any]) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
         return self.prepare(rows, QUALITY_COLUMNS,
@@ -151,7 +160,10 @@ class AnalyticsService:
                 start_timestamp = start_timestamp.tz_convert("UTC")
             frame = frame[frame.production_timestamp >= start_timestamp]
         if end is not None:
+            end_text = str(end)
             end_timestamp = pd.Timestamp(end)
+            if len(end_text) == 10:
+                end_timestamp = end_timestamp + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
             if end_timestamp.tzinfo is None:
                 end_timestamp = end_timestamp.tz_localize("UTC")
             else:
@@ -235,6 +247,27 @@ class AnalyticsService:
                         for grade in GRADES}
         sorting_total = len(sorting)
         sorting_success = int((sorting.status.str.casefold() == "success").sum()) if sorting_total else 0
+        anomaly_signals = []
+        if not q.empty:
+            high_anomaly = q[q["anomaly_score"].ge(0.8)] if "anomaly_score" in q else q.iloc[0:0]
+            low_confidence = q[q["confidence"].lt(0.5)] if "confidence" in q else q.iloc[0:0]
+            if len(high_anomaly):
+                anomaly_signals.append({
+                    "code": "high_anomaly_score", "severity": "high",
+                    "count": int(len(high_anomaly)), "threshold": 0.8,
+                    "message": "Inspection records exceed the configured anomaly-score threshold.",
+                })
+            if len(low_confidence):
+                anomaly_signals.append({
+                    "code": "low_inspection_confidence", "severity": "medium",
+                    "count": int(len(low_confidence)), "threshold": 0.5,
+                    "message": "Inspection records have confidence below the configured review threshold.",
+                })
+        anomaly_signals.extend({
+            "code": warning["code"], "severity": warning.get("severity", "medium"),
+            "count": warning.get("observed_value"), "threshold": warning.get("threshold"),
+            "message": warning.get("recommendation", warning.get("message", warning["code"])),
+        } for warning in self.warnings if warning["code"] in {"inconsistent_quantities", "duplicate_records"})
         return {
             "kpis": {**totals,
                      "inspection_coverage": _pct(inspected, totals["production_quantity"]),
@@ -258,6 +291,7 @@ class AnalyticsService:
                         "success_rate": _pct(sorting_success, sorting_total),
                         "by_outcome": self._distribution("actual_sorting_outcome")},
             "batch_summaries": self.batch_summaries(),
+            "anomalies": anomaly_signals,
             "warnings": self.warnings,
         }
 
@@ -319,6 +353,20 @@ class AnalyticsService:
                             "defect_increase", "high", None, "defect_event_increase_percent",
                             round(increase, 2), self.thresholds.defect_increase_percent,
                             "Investigate the latest inspection period and compare defect categories with the prior period."))
+            if "anomaly_score" in self.inspections:
+                high_anomaly = self.inspections[self.inspections.anomaly_score.ge(0.8)]
+                if len(high_anomaly):
+                    warnings.append(self._warning(
+                        "high_anomaly_score", "high", None, "high_anomaly_score",
+                        len(high_anomaly), 0.8,
+                        "Review high-anomaly inspection records and quarantine affected output until confirmed."))
+            if "confidence" in self.inspections:
+                low_confidence = self.inspections[self.inspections.confidence.lt(0.5)]
+                if len(low_confidence):
+                    warnings.append(self._warning(
+                        "low_inspection_confidence", "medium", None, "low_inspection_confidence",
+                        len(low_confidence), 0.5,
+                        "Review low-confidence inspection records before using them for release decisions."))
         if not self.quality.empty and "batch_consistency_status" in self.quality:
             inconsistent = self.quality[
                 self.quality.batch_consistency_status.fillna("").str.casefold().isin(

@@ -24,6 +24,13 @@ unset, which makes isolated tests and local prototyping possible.
 
 ## Migrations and demonstration data
 
+Seeding is optional and inserts only clearly marked local demonstration records.
+Remove those records without touching other data with:
+
+```powershell
+python -m scripts.reset_demo
+```
+
 ```powershell
 $env:FLASK_APP = "run.py"
 python -m flask db upgrade
@@ -139,16 +146,69 @@ estimate, not a guarantee of future defects. The API explicitly returns
 `untrained`, `insufficient_data`, `unavailable`, or `failed` states instead of
 inventing probabilities or evaluation results.
 
+## Hand-image dataset boundary
+
+The Google Drive hand-image dataset is not bundled with this repository. The
+workspace audit found no project image files outside Python and frontend
+dependencies, so no image count, class distribution, dimensions, corruption
+check, duplicate check, or glove-versus-bare-hand determination can be made
+yet. Do not train the quality-risk model from left/right image labels: those
+labels represent an orientation-classification task, not a defective-versus-
+acceptable production outcome.
+
+If an image-classification supporting task is later approved, download the
+dataset manually and place it under:
+
+```text
+component4\backend\data\raw\hand_images\
+```
+
+Use the class folders below for the current left/right organization:
+
+```text
+component4\backend\data\raw\hand_images\left\
+component4\backend\data\raw\hand_images\right\
+```
+
+Then audit the files and labels before adding a separate image model. The
+existing batch-level Random Forest remains the Component 4 quality-risk model
+and requires labelled production history as described above.
+
+The current dataset audit found 435 valid JPEG glove images at 2560x1440:
+218 in `left` and 217 in `right`, with no corrupt files or exact duplicate
+files. A separate grayscale pixel/gradient Logistic Regression classifier is
+provided for this orientation-support task. It uses grouped capture-minute
+splits and reports validation/test metrics; it does not predict defects,
+acceptance, or batch quality risk.
+
+Train it from `component4\backend`:
+
+```powershell
+python -m scripts.train_hand_orientation
+```
+
+Override paths when needed:
+
+```powershell
+$env:HAND_IMAGE_DATASET_DIR = "data\raw\hand_images"
+$env:HAND_ORIENTATION_MODEL_DIR = "..\models\hand_orientation"
+python -m scripts.train_hand_orientation
+```
+
+The saved Joblib model and JSON metadata are generated artifacts and should not
+be treated as production validation without a representative independent test
+set.
+
 ## Alerts and reports
 
 `POST /api/v1/alerts/generate` evaluates current analytics and completed model
 predictions. Rule conditions and ML conditions are labelled separately in the
-`source` field. An active condition is deduplicated by triggering metric and
+`source` field. An active condition is deduplicated by title, triggering metric, and
 batch until the existing alert is resolved. `GET /api/v1/alerts` supports
 `search`, `severity`, `batch_id`, `start_date`, `end_date`, and `status`;
 `GET /api/v1/alerts/summary` provides active severity counts. Alert status can
-be changed with `PATCH /api/v1/alerts/<id>` using `Open`, `Acknowledged`, or
-`Resolved`.
+be changed with `PATCH /api/v1/alerts/<id>` using `Open`, `Acknowledged`,
+`Under Review`, or `Resolved`.
 
 Reports support `daily-production`, `batch-quality`, `defect-analysis`,
 `rejection-acceptance`, `historical-trend`, and `predictive-risk`. Use
@@ -164,3 +224,39 @@ available rows; unavailable values remain explicitly empty.
 ```powershell
 python -m pytest tests -q
 ```
+
+## Frontend checks
+
+From `component4\frontend`:
+
+```powershell
+npm install
+npm run build
+```
+
+The build performs the TypeScript check and creates the Vite production bundle.
+No separate lint script is configured in the existing package.
+
+## API endpoint groups
+
+All responses use `{ "data": ..., "meta": ... }` on success and
+`{ "error": { "code": ..., "message": ... } }` on failure.
+
+* Dashboard: `/dashboard/summary`, `/dashboard/trends`
+* Analytics: `/analytics/descriptive`, `/analytics/trends`,
+  `/analytics/quality`, `/analytics/decision-support`
+* Records: `/production`, `/batches`, `/batches/<batch_id>/quality`,
+  `/history`, `/defects/summary`, `/defects/trends`, `/sorting/summary`
+* Predictions: `/predictions`, `/predictions/status`,
+  `/predictions/analytics`, `/predictions/train`, `/predictions/predict`
+* Alerts: `/alerts`, `/alerts/summary`, `/alerts/generate`,
+  `/alerts/<alert_id>`
+* Reports: `/reports`, `/reports/preview`, `/reports/export`
+* Data/configuration: `/data-management/summary`,
+  `/data-management/import`, `/settings`
+
+Genuine predictive evaluation requires at least the configured minimum number of
+eligible historical batches, valid production quantities and timestamps, and both
+target classes in chronological training and evaluation windows. With insufficient
+history the API reports `insufficient_data` instead of fabricating accuracy or
+risk probabilities.
