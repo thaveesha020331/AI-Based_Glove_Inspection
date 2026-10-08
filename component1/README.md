@@ -9,3 +9,7 @@ Component 1 contains the data and experimentation resources used by the glove in
 ## Purpose
 
 The component provides a consistent place to prepare inspection data and record experiments.
+
+## Directory layout
+
+- `configs/` stores component-specific configuration files.
