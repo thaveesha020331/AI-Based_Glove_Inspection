@@ -52,6 +52,20 @@ class DecisionSupportService:
                     prediction.get("predicted_probability"), risk,
                     f"Model predicts {risk} quality risk",
                     "Increase sampling and review the batch using the model indicators before release."))
+        existing_metrics = {item["triggering_metric"] for item in items}
+        warning_builder = getattr(self.analytics, "warnings_for_decision_support", None)
+        for warning in warning_builder() if warning_builder else []:
+            if warning["code"] in {"elevated_rejection_rate", "sorting_failure_rate"}:
+                continue
+            metric = warning["metric"]
+            if metric in existing_metrics:
+                continue
+            items.append(self._item(
+                "rule", warning["severity"], warning.get("batch_id"), metric,
+                warning["observed_value"], warning["threshold"], warning["code"].replace("_", " ").title(),
+                warning["recommendation"],
+            ))
+            existing_metrics.add(metric)
         return items
 
     @staticmethod

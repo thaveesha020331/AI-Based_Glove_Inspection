@@ -46,7 +46,7 @@ class ReportService:
             rows = self.analytics.trends("daily", start, end)
         if batch_id:
             rows = [row for row in rows if str(row.get("batch_id")) == str(batch_id)]
-        elif start or end:
+        if start or end:
             rows = self._filter_rows_by_period(report_type, rows, start, end)
         return {
             "report_type": report_type, "title": REPORT_TYPES[report_type],
@@ -69,6 +69,29 @@ class ReportService:
         elif report_type == "defect-analysis":
             frame = self.analytics.inspections.copy()
             timestamp_field = "inspection_timestamp"
+        elif report_type == "predictive-risk":
+            if not rows:
+                return []
+            timestamps = pd.to_datetime(
+                [row.get("prediction_time") for row in rows], errors="coerce", utc=True
+            )
+            if start:
+                start_timestamp = pd.Timestamp(start)
+                if start_timestamp.tzinfo is None:
+                    start_timestamp = start_timestamp.tz_localize("UTC")
+                else:
+                    start_timestamp = start_timestamp.tz_convert("UTC")
+                timestamps = timestamps.where(timestamps >= start_timestamp)
+            if end:
+                end_timestamp = pd.Timestamp(end)
+                if len(str(end)) == 10:
+                    end_timestamp = end_timestamp + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+                if end_timestamp.tzinfo is None:
+                    end_timestamp = end_timestamp.tz_localize("UTC")
+                else:
+                    end_timestamp = end_timestamp.tz_convert("UTC")
+                timestamps = timestamps.where(timestamps <= end_timestamp)
+            return [row for row, timestamp in zip(rows, timestamps) if pd.notna(timestamp)]
         else:
             frame = None
             timestamp_field = ""
@@ -76,9 +99,21 @@ class ReportService:
             return []
         timestamps = pd.to_datetime(frame[timestamp_field], errors="coerce", utc=True)
         if start:
-            timestamps = timestamps.where(timestamps >= pd.Timestamp(start, tz="UTC"))
+            start_timestamp = pd.Timestamp(start)
+            if start_timestamp.tzinfo is None:
+                start_timestamp = start_timestamp.tz_localize("UTC")
+            else:
+                start_timestamp = start_timestamp.tz_convert("UTC")
+            timestamps = timestamps.where(timestamps >= start_timestamp)
         if end:
-            timestamps = timestamps.where(timestamps <= pd.Timestamp(end, tz="UTC"))
+            end_timestamp = pd.Timestamp(end)
+            if len(str(end)) == 10:
+                end_timestamp = end_timestamp + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+            if end_timestamp.tzinfo is None:
+                end_timestamp = end_timestamp.tz_localize("UTC")
+            else:
+                end_timestamp = end_timestamp.tz_convert("UTC")
+            timestamps = timestamps.where(timestamps <= end_timestamp)
         if report_type == "defect-analysis":
             frame = frame.loc[timestamps.notna()].dropna(subset=["defect_category"])
             counts = frame["defect_category"].value_counts()
@@ -89,35 +124,41 @@ class ReportService:
 
     def _scoped_metrics(self, descriptive: dict[str, Any], start: str | None,
                         end: str | None, batch_id: str | None) -> dict[str, Any]:
-        if batch_id:
-            match = next((row for row in descriptive["batch_summaries"]
-                          if str(row.get("batch_id")) == str(batch_id)), None)
-            if not match:
+        if batch_id or start or end:
+            frame = self.analytics.production.copy()
+            if frame.empty:
                 return {key: None for key in descriptive["kpis"]}
-            production = match["production_quantity"]
-            inspected = match["inspected_quantity"]
-            return {
-                "production_quantity": production, "inspected_quantity": inspected,
-                "accepted_quantity": match["accepted_quantity"],
-                "rejected_quantity": match["rejected_quantity"],
-                "inspection_coverage": round(inspected / production * 100, 2) if production else None,
-                "rejection_rate": match["rejection_rate"],
-                "acceptance_rate": round(match["accepted_quantity"] / inspected * 100, 2)
-                if inspected else None,
-            }
-        if start or end:
-            trend = self.analytics.trends("daily", start, end)
-            if not trend:
+            timestamps = pd.to_datetime(frame["production_timestamp"], errors="coerce", utc=True)
+            valid = timestamps.notna()
+            if batch_id:
+                valid &= frame["batch_id"].astype(str).eq(str(batch_id))
+            if start:
+                valid &= timestamps >= self._boundary(start)
+            if end:
+                valid &= timestamps <= self._boundary(end, end_of_day=True)
+            frame = frame.loc[valid]
+            if frame.empty:
                 return {key: None for key in descriptive["kpis"]}
-            totals = {key: sum((row.get(key) or 0) for row in trend)
+            totals = {key: float(frame[key].sum())
                       for key in ("production_quantity", "inspected_quantity",
                                   "accepted_quantity", "rejected_quantity")}
+            totals = {key: int(value) if value.is_integer() else value for key, value in totals.items()}
             production, inspected = totals["production_quantity"], totals["inspected_quantity"]
             return {**totals,
                     "inspection_coverage": round(inspected / production * 100, 2) if production else None,
                     "rejection_rate": round(totals["rejected_quantity"] / inspected * 100, 2) if inspected else None,
-                    "acceptance_rate": round(totals["accepted_quantity"] / inspected * 100, 2) if inspected else None}
+                    "acceptance_rate": round(totals["accepted_quantity"] / inspected * 100, 2)
+                    if inspected else None}
         return descriptive["kpis"]
+
+    @staticmethod
+    def _boundary(value: str, end_of_day: bool = False) -> pd.Timestamp:
+        timestamp = pd.Timestamp(value)
+        if end_of_day and len(str(value)) == 10:
+            timestamp += pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+        if timestamp.tzinfo is None:
+            return timestamp.tz_localize("UTC")
+        return timestamp.tz_convert("UTC")
 
     @staticmethod
     def _findings(data: dict[str, Any]) -> list[str]:
