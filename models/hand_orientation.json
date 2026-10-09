@@ -1,0 +1,68 @@
+{
+  "model_version": "orientation-logistic-20261018T064744Z",
+  "trained_at": "2026-10-18T06:47:44.201652+00:00",
+  "purpose": "left/right glove orientation classification only",
+  "dataset": {
+    "dataset_dir": "data\\raw\\hand_images",
+    "image_count": 435,
+    "class_distribution": {
+      "left": 218,
+      "right": 217
+    },
+    "dimensions": {
+      "2560x1440": 435
+    },
+    "corrupt_count": 0,
+    "near_duplicate_file_count": 375
+  },
+  "split": {
+    "strategy": "grouped capture-minute split",
+    "train": 173,
+    "validation": 173,
+    "test": 89
+  },
+  "preprocessing": {
+    "image_size": [
+      64,
+      64
+    ],
+    "grayscale": true,
+    "features": "pixels plus gradient magnitude"
+  },
+  "evaluation": {
+    "validation": {
+      "sample_size": 173,
+      "accuracy": 0.9827,
+      "precision": 0.9775,
+      "recall": 0.9886,
+      "f1": 0.9831,
+      "confusion_matrix": [
+        [
+          83,
+          2
+        ],
+        [
+          1,
+          87
+        ]
+      ]
+    },
+    "test": {
+      "sample_size": 89,
+      "accuracy": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "confusion_matrix": [
+        [
+          45,
+          0
+        ],
+        [
+          0,
+          44
+        ]
+      ]
+    }
+  }
+}
