@@ -34,3 +34,8 @@ component4/data/*
 # Backend local databases and runtime files
 component4/backend/*.db
 component4/backend/instance/
+# Component 3 local firmware configuration and build products
+component3/include/secrets.h
+component3/.pio/
+component3/logs/*.csv
+component3/logs/*.jsonl
