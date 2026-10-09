@@ -13,3 +13,4 @@ The component provides a consistent place to prepare inspection data and record 
 ## Directory layout
 
 - `configs/` stores component-specific configuration files.
+- `datasets/` is reserved for input data and dataset metadata.
