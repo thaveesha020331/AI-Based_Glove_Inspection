@@ -6,5 +6,6 @@ backend/__pycache__/
 backend/**/__pycache__/
 backend/.pytest_cache/
 backend/.env
+!.env.example
 models/*.joblib
 data/*.csv

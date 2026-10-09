@@ -50,9 +50,13 @@ def _safe_rate(numerator, denominator):
     return round(float(numerator) / float(denominator) * 100, 2) if denominator else None
 
 
-def parse_date(value, field):
+def parse_date(value, field, end_of_day=False):
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        text = str(value).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(text)
+        if end_of_day and len(text) == 10:
+            parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return parsed
     except (TypeError, ValueError):
         raise ValueError(f"{field} must be a valid ISO-8601 date/time.")
 
@@ -82,7 +86,7 @@ def apply_common_filters(query, timestamp_column):
         except ValueError as exc:
             raise exc
     if end:
-        query = query.filter(timestamp_column <= parse_date(end, "end_date"))
+        query = query.filter(timestamp_column <= parse_date(end, "end_date", end_of_day=True))
     if search:
         query = query.filter(Batch.batch_id.ilike(f"%{search}%"))
     return query
@@ -213,7 +217,7 @@ def production_list():
         if request.args.get("start_date"):
             query = query.filter(ProductionRecord.production_timestamp >= parse_date(request.args["start_date"], "start_date"))
         if request.args.get("end_date"):
-            query = query.filter(ProductionRecord.production_timestamp <= parse_date(request.args["end_date"], "end_date"))
+            query = query.filter(ProductionRecord.production_timestamp <= parse_date(request.args["end_date"], "end_date", end_of_day=True))
         query = query.order_by(ProductionRecord.production_timestamp.desc())
         rows, meta = paginate(query)
         return response([model_to_dict(row) for row in rows], meta=meta)
@@ -452,18 +456,21 @@ def prediction_create():
 @api_v1_bp.get("/alerts")
 def alerts():
     query = QualityAlert.query.order_by(QualityAlert.created_at.desc())
-    for field in ("status", "severity", "batch_id"):
-        if request.args.get(field):
-            query = query.filter(getattr(QualityAlert, field) == request.args[field])
-    if request.args.get("search"):
-        term = f"%{request.args['search']}%"
-        query = query.filter(or_(QualityAlert.title.ilike(term),
-                                 QualityAlert.description.ilike(term),
-                                 QualityAlert.triggering_metric.ilike(term)))
-    if request.args.get("start_date"):
-        query = query.filter(QualityAlert.created_at >= parse_date(request.args["start_date"], "start_date"))
-    if request.args.get("end_date"):
-        query = query.filter(QualityAlert.created_at <= parse_date(request.args["end_date"], "end_date"))
+    try:
+        for field in ("status", "severity", "batch_id"):
+            if request.args.get(field):
+                query = query.filter(getattr(QualityAlert, field) == request.args[field])
+        if request.args.get("search"):
+            term = f"%{request.args['search']}%"
+            query = query.filter(or_(QualityAlert.title.ilike(term),
+                                     QualityAlert.description.ilike(term),
+                                     QualityAlert.triggering_metric.ilike(term)))
+        if request.args.get("start_date"):
+            query = query.filter(QualityAlert.created_at >= parse_date(request.args["start_date"], "start_date"))
+        if request.args.get("end_date"):
+            query = query.filter(QualityAlert.created_at <= parse_date(request.args["end_date"], "end_date", end_of_day=True))
+    except ValueError as exc:
+        return error(str(exc))
     rows, meta = paginate(query)
     data = []
     for row in rows:
@@ -475,23 +482,23 @@ def alerts():
 
 @api_v1_bp.get("/alerts/summary")
 def alerts_summary():
-    rows = QualityAlert.query.filter(QualityAlert.status.in_(("Open", "Acknowledged"))).all()
+    rows = QualityAlert.query.filter(QualityAlert.status.in_(("Open", "Acknowledged", "Under Review"))).all()
     counts = {severity: sum(alert.severity.casefold() == severity for alert in rows)
               for severity in ("critical", "high", "medium", "low")}
     return response({"active_total": len(rows), "by_severity": counts,
                      "statuses": {status: sum(alert.status == status for alert in rows)
-                                  for status in ("Open", "Acknowledged")}})
+                                  for status in ("Open", "Acknowledged", "Under Review")}})
 
 
 @api_v1_bp.post("/alerts/generate")
 def alerts_generate():
     service = DecisionSupportService(analytics_service(), prediction_dicts())
-    active = {(alert.triggering_metric, alert.batch_id)
+    active = {(alert.triggering_metric, alert.batch_id, alert.title)
               for alert in QualityAlert.query.filter(
-                  QualityAlert.status.in_(("Open", "Acknowledged"))).all()}
+                  QualityAlert.status.in_(("Open", "Acknowledged", "Under Review"))).all()}
     created = []
     for item in service.recommendations():
-        key = (item["triggering_metric"], item["batch_id"])
+        key = (item["triggering_metric"], item["batch_id"], item["title"])
         if key in active:
             continue
         alert = QualityAlert(
@@ -516,8 +523,8 @@ def alert_update(alert_id):
     if not alert:
         return error("Alert not found.", "not_found", 404)
     payload = request.get_json(silent=True) or {}
-    if "status" not in payload or payload["status"] not in {"Open", "Acknowledged", "Resolved"}:
-        return error("status must be Open, Acknowledged, or Resolved.")
+    if "status" not in payload or payload["status"] not in {"Open", "Acknowledged", "Under Review", "Resolved"}:
+        return error("status must be Open, Acknowledged, Under Review, or Resolved.")
     alert.status = payload["status"]
     audit("update", "QualityAlert", alert_id, {"status": alert.status})
     db.session.commit()
@@ -635,6 +642,19 @@ def import_csv():
         missing = sorted(REQUIRED_COLUMNS[kind] - set(frame.columns))
         if missing:
             return error("CSV is missing required columns.", details={"columns": missing})
+        duplicate_keys = {
+            "production": ["batch_id", "production_timestamp"],
+            "inspection": ["record_id"],
+            "quality": ["batch_id", "glove_size", "colour", "length_measurement", "orientation", "quality_grade"],
+            "sorting": ["batch_id", "sorting_timestamp", "intended_sorting_category"],
+        }[kind]
+        duplicate_rows = frame[frame.duplicated(subset=duplicate_keys, keep=False)]
+        if not duplicate_rows.empty:
+            return error(
+                "CSV contains duplicate rows. No rows were imported.",
+                "conflict", 409,
+                {"fields": duplicate_keys, "rows": [int(index) + 2 for index in duplicate_rows.index.tolist()]},
+            )
         data_quality_warnings = []
         optional_quantity_fields = {"inspected_quantity", "accepted_quantity", "rejected_quantity"}
         absent_quantities = sorted(optional_quantity_fields - set(frame.columns)) if kind == "production" else []

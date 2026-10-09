@@ -16,6 +16,8 @@ Thumbs.db
 # Local environment files
 .env
 .env.*
+!component4/backend/.env.example
+!component4/frontend/.env.example
 
 # Generated artifacts (directory placeholders remain tracked)
 component1/datasets/*
