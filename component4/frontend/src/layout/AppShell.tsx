@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Bell, ChevronDown, Factory, Menu, Search, X } from "lucide-react";
 
 const navigation = [
@@ -13,6 +13,7 @@ const navigation = [
 export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   const current = navigation.find((item) => item.path === location.pathname)?.label ?? "Overview";
   return (
     <div className="min-h-screen bg-canvas">
@@ -31,9 +32,9 @@ export function AppShell() {
       <div className="lg:pl-[256px]">
         <header className="sticky top-0 z-20 flex h-[76px] items-center justify-between border-b border-line bg-white/95 px-5 backdrop-blur lg:px-8">
           <div className="flex items-center gap-3"><button className="focus-ring rounded-lg p-2 text-muted hover:bg-slate-50 lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Menu size={21} /></button><div><div className="hidden items-center gap-2 text-xs text-muted sm:flex"><span>Workspace</span><span>/</span><span className="text-ink">{current}</span></div><h1 className="heading text-lg font-bold text-ink sm:mt-1 sm:text-xl">{current}</h1></div></div>
-          <div className="flex items-center gap-2 sm:gap-4"><div className="hidden items-center gap-2 rounded-lg border border-line bg-slate-50 px-3 py-2 text-xs text-muted md:flex"><Search size={15} /><span>Search workspace</span><kbd className="ml-5 rounded border border-line bg-white px-1.5 py-0.5 text-[10px]">⌘ K</kbd></div><button className="focus-ring relative rounded-lg p-2 text-muted hover:bg-slate-50" aria-label="Notifications"><Bell size={19} /><span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-red-500" /></button><div className="hidden h-8 w-px bg-line sm:block" /><button className="focus-ring flex items-center gap-2 rounded-lg p-1.5 hover:bg-slate-50"><div className="grid h-8 w-8 place-items-center rounded-full bg-[#dcecf1] text-xs font-bold text-brand">AT</div><span className="hidden text-left text-xs sm:block"><span className="block font-bold text-ink">Alex Taylor</span><span className="block text-muted">Quality lead</span></span><ChevronDown size={14} className="hidden text-muted sm:block" /></button></div>
+          <div className="flex items-center gap-2 sm:gap-4"><button onClick={() => navigate("/alerts")} className="focus-ring hidden items-center gap-2 rounded-lg border border-line bg-slate-50 px-3 py-2 text-xs text-muted md:flex" aria-label="Open alerts"><Search size={15} /><span>Search alerts</span><kbd className="ml-5 rounded border border-line bg-white px-1.5 py-0.5 text-[10px]">⌘ K</kbd></button><button onClick={() => navigate("/alerts")} className="focus-ring relative rounded-lg p-2 text-muted hover:bg-slate-50" aria-label="Open notifications"><Bell size={19} /><span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-red-500" /></button><div className="hidden h-8 w-px bg-line sm:block" /><button onClick={() => navigate("/settings")} className="focus-ring flex items-center gap-2 rounded-lg p-1.5 hover:bg-slate-50" aria-label="Open settings"><div className="grid h-8 w-8 place-items-center rounded-full bg-[#dcecf1] text-xs font-bold text-brand">AT</div><span className="hidden text-left text-xs sm:block"><span className="block font-bold text-ink">Alex Taylor</span><span className="block text-muted">Quality lead</span></span><ChevronDown size={14} className="hidden text-muted sm:block" /></button></div>
         </header>
-        <div className="border-b border-line bg-[#fbfcfd] px-5 py-2.5 text-xs text-muted lg:px-8"><span className="font-semibold text-brand">DEMO DATA</span><span className="mx-2 text-slate-300">•</span>Sample figures are for interface development and do not represent live factory measurements.</div>
+        <div className="border-b border-line bg-[#fbfcfd] px-5 py-2.5 text-xs text-muted lg:px-8"><span className="font-semibold text-teal">LIVE API WORKSPACE</span><span className="mx-2 text-slate-300">•</span>Metrics and predictions are loaded from the configured Flask data source.</div>
         <Outlet />
       </div>
     </div>
