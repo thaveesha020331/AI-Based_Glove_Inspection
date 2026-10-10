@@ -14,3 +14,4 @@ The component provides a consistent place to prepare inspection data and record 
 
 - `configs/` stores component-specific configuration files.
 - `datasets/` is reserved for input data and dataset metadata.
+- `models/` contains model artifacts produced by experiments.
