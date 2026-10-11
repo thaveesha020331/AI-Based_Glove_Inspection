@@ -106,10 +106,47 @@ void SortingController::processS2() {
   previousS2_ = current;
 }
 
-void SortingController::processTrigger() {}
-void SortingController::processRelayPulse() {}
+void SortingController::processTrigger() {
+  if (event_.state != SortState::WAIT_TRIGGER ||
+      !deadlineReached(millis(), triggerAtMs_)) {
+    return;
+  }
+
+  if (event_.decision == Decision::ACCEPT) {
+    event_.status = "ACCEPT_NO_AIR_JET";
+    event_.state = SortState::VERIFYING;
+    verifyStartedMs_ = millis();
+  } else if (event_.decision == Decision::DEFECTIVE) {
+    activateRelay(Config::PIN_RELAY_DEFECTIVE);
+  } else if (event_.decision == Decision::WRONG_ORIENTATION) {
+    activateRelay(Config::PIN_RELAY_ORIENTATION);
+  } else {
+    fail("MISSING_DECISION");
+  }
+}
+
+void SortingController::processRelayPulse() {
+  if (event_.state != SortState::ACTUATING ||
+      !deadlineReached(millis(), relayOffAtMs_)) {
+    return;
+  }
+
+  allRelaysOff();
+  verifyStartedMs_ = millis();
+  event_.state = SortState::VERIFYING;
+  event_.status = "WAITING_FOR_VERIFICATION";
+}
 void SortingController::processVerification() {}
-void SortingController::activateRelay(uint8_t) {}
+void SortingController::activateRelay(const uint8_t pin) {
+  allRelaysOff();
+  digitalWrite(pin, Config::RELAY_ON);
+  activeRelayPin_ = pin;
+  relayOffAtMs_ = millis() + Config::NOZZLE_PULSE_MS;
+  event_.state = SortState::ACTUATING;
+  event_.status = pin == Config::PIN_RELAY_DEFECTIVE
+                      ? "DEFECTIVE_NOZZLE_ACTIVE"
+                      : "ORIENTATION_NOZZLE_ACTIVE";
+}
 
 void SortingController::allRelaysOff() {
   digitalWrite(Config::PIN_RELAY_DEFECTIVE, Config::RELAY_OFF);
