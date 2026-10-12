@@ -136,7 +136,51 @@ void SortingController::processRelayPulse() {
   event_.state = SortState::VERIFYING;
   event_.status = "WAITING_FOR_VERIFICATION";
 }
-void SortingController::processVerification() {}
+void SortingController::processVerification() {
+  const int v1 = digitalRead(Config::PIN_V1);
+  const int v2 = digitalRead(Config::PIN_V2);
+  if (event_.state != SortState::VERIFYING) {
+    previousV1_ = v1;
+    previousV2_ = v2;
+    return;
+  }
+
+  const bool defectiveEdge = previousV1_ != Config::SENSOR_ACTIVE &&
+                             v1 == Config::SENSOR_ACTIVE;
+  const bool orientationEdge = previousV2_ != Config::SENSOR_ACTIVE &&
+                               v2 == Config::SENSOR_ACTIVE;
+
+  if (defectiveEdge && orientationEdge) {
+    event_.actualDestination = "AMBIGUOUS";
+    fail("MULTIPLE_DESTINATIONS");
+  } else if (defectiveEdge) {
+    event_.actualDestination = "DEFECTIVE_BIN";
+    event_.status = event_.decision == Decision::DEFECTIVE
+                        ? "CORRECT"
+                        : "SORTING_ERROR";
+    event_.state = SortState::COMPLETE;
+  } else if (orientationEdge) {
+    event_.actualDestination = "WRONG_ORIENTATION_BIN";
+    event_.status = event_.decision == Decision::WRONG_ORIENTATION
+                        ? "CORRECT"
+                        : "SORTING_ERROR";
+    event_.state = SortState::COMPLETE;
+  } else if (millis() - verifyStartedMs_ > Config::VERIFY_TIMEOUT_MS) {
+    if (event_.decision == Decision::ACCEPT) {
+      // There is no accept-path sensor in the four-sensor prototype, so this
+      // is explicitly reported as inferred rather than strongly verified.
+      event_.actualDestination = "ACCEPT_PATH_UNVERIFIED";
+      event_.status = "ACCEPT_INFERRED";
+      event_.state = SortState::COMPLETE;
+    } else {
+      event_.actualDestination = "UNKNOWN";
+      fail("VERIFICATION_TIMEOUT");
+    }
+  }
+
+  previousV1_ = v1;
+  previousV2_ = v2;
+}
 void SortingController::activateRelay(const uint8_t pin) {
   allRelaysOff();
   digitalWrite(pin, Config::RELAY_ON);
