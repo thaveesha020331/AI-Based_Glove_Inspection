@@ -16,3 +16,4 @@ The component provides a consistent place to prepare inspection data and record 
 - `datasets/` is reserved for input data and dataset metadata.
 - `models/` contains model artifacts produced by experiments.
 - `notebooks/` is used for exploratory analysis and prototyping.
+- `runs/` keeps outputs and records from model experiments.
