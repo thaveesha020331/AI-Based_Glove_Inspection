@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "units": {
+    "distance": "m",
+    "time": "ms",
+    "speed": "m/s"
+  },
+  "sensor_distance": 0.2,
+  "s2_to_nozzle_distance": 0.3,
+  "actuator_delay": 80,
+  "nozzle_pulse": 120,
+  "s2_timeout": 3000,
+  "verification_timeout": 2000,
+  "valid_speed_range": {
+    "minimum": 0.01,
+    "maximum": 5.0
+  },
+  "notes": "Prototype defaults only; replace with measured values before trials."
+}
+
