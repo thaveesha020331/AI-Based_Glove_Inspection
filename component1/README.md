@@ -17,3 +17,4 @@ The component provides a consistent place to prepare inspection data and record 
 - `models/` contains model artifacts produced by experiments.
 - `notebooks/` is used for exploratory analysis and prototyping.
 - `runs/` keeps outputs and records from model experiments.
+- `src/` contains reusable component source code and tests.
