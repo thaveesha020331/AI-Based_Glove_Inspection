@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glove-inspection.local/schemas/sort-status.json",
+  "title": "Component 3 sorting status",
+  "type": "object",
+  "required": [
+    "event_id", "decision", "state", "speed_mps", "travel_time_ms",
+    "trigger_wait_ms", "actual_destination", "sorting_status"
+  ],
+  "properties": {
+    "event_id": { "type": "string" },
+    "decision": {
+      "enum": ["NONE", "ACCEPT", "DEFECTIVE", "WRONG_ORIENTATION"]
+    },
+    "state": { "type": "string" },
+    "speed_mps": { "type": "number", "minimum": 0 },
+    "travel_time_ms": { "type": "number", "minimum": 0 },
+    "trigger_wait_ms": { "type": "number", "minimum": 0 },
+    "actual_destination": { "type": "string" },
+    "sorting_status": { "type": "string" }
+  }
+}
+

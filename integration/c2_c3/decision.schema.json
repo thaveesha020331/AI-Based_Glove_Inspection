@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://glove-inspection.local/schemas/sort-decision.json",
+  "title": "Component 2 to Component 3 sorting decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "decision"],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["ACCEPT", "DEFECTIVE", "WRONG_ORIENTATION"]
+    }
+  }
+}
+
