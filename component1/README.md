@@ -18,3 +18,7 @@ The component provides a consistent place to prepare inspection data and record 
 - `notebooks/` is used for exploratory analysis and prototyping.
 - `runs/` keeps outputs and records from model experiments.
 - `src/` contains reusable component source code and tests.
+
+## Configuration
+
+Keep paths and experiment settings in `configs/` so runs can be reproduced.
