@@ -22,3 +22,7 @@ The component provides a consistent place to prepare inspection data and record 
 ## Configuration
 
 Keep paths and experiment settings in `configs/` so runs can be reproduced.
+
+## Data organization
+
+Place source images and labels under `datasets/` using a documented split structure.
