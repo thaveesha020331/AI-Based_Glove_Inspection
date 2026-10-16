@@ -26,3 +26,7 @@ Keep paths and experiment settings in `configs/` so runs can be reproduced.
 ## Data organization
 
 Place source images and labels under `datasets/` using a documented split structure.
+
+## Experiments
+
+Use a separate subdirectory in `runs/` for each meaningful experiment.
