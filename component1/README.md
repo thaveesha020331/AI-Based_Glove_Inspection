@@ -30,3 +30,7 @@ Place source images and labels under `datasets/` using a documented split struct
 ## Experiments
 
 Use a separate subdirectory in `runs/` for each meaningful experiment.
+
+## Reproducibility
+
+Record the configuration and data revision alongside each experiment output.
