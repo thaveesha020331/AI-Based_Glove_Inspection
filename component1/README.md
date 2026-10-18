@@ -34,3 +34,7 @@ Use a separate subdirectory in `runs/` for each meaningful experiment.
 ## Reproducibility
 
 Record the configuration and data revision alongside each experiment output.
+
+## Notebooks
+
+Keep exploratory notebooks focused and move reusable steps into `src/`.
