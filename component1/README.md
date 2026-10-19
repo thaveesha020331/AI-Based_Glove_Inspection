@@ -38,3 +38,7 @@ Record the configuration and data revision alongside each experiment output.
 ## Notebooks
 
 Keep exploratory notebooks focused and move reusable steps into `src/`.
+
+## Validation
+
+Review data and experiment outputs before using them in downstream components.
