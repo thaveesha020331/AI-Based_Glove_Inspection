@@ -11,3 +11,4 @@ Pillow>=10.4,<12
 reportlab>=4.2,<5
 python-dotenv==1.0.1
 pytest==8.3.3
+pyserial==3.5

@@ -225,6 +225,34 @@ available rows; unavailable values remain explicitly empty.
 python -m pytest tests -q
 ```
 
+## Component 3 live serial telemetry
+
+The sorting dashboard reads live status from `GET /api/v1/sorting/live`. The
+Flask process automatically starts `Drivers/interface.py` in a background
+thread on its first request, so a separate driver terminal is not required.
+Install the backend requirements and configure the serial port before starting
+Flask:
+
+```powershell
+cd component4\backend
+python -m pip install -r requirements.txt
+$env:COMPONENT3_SERIAL_PORT = "COM7"
+python -m flask --app run.py run --debug
+```
+
+Optional configuration:
+
+```powershell
+$env:COMPONENT3_BAUD_RATE = "115200"
+$env:COMPONENT3_DRIVER_ENABLED = "true"
+```
+
+The firmware emits status every 100 ms. The backend writes it directly to the
+in-process telemetry store and immediately pushes changes to the dashboard over
+`GET /api/v1/sorting/stream` using Server-Sent Events. If no driver update
+arrives within `SORTING_TELEMETRY_STALE_SECONDS`, the device is shown as offline. Set
+`COMPONENT3_DRIVER_ENABLED=false` only when running the driver separately.
+
 ## Frontend checks
 
 From `component4\frontend`:
