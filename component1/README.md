@@ -50,3 +50,7 @@ Store generated model files with enough metadata to identify their training run.
 ## Collaboration
 
 Keep component-specific documentation close to the files it describes.
+
+## Change scope
+
+Changes to this component should preserve the interfaces consumed by the other components.
