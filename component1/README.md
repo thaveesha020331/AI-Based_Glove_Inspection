@@ -42,3 +42,7 @@ Keep exploratory notebooks focused and move reusable steps into `src/`.
 ## Validation
 
 Review data and experiment outputs before using them in downstream components.
+
+## Models
+
+Store generated model files with enough metadata to identify their training run.
