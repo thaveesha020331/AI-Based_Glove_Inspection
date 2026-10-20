@@ -46,3 +46,7 @@ Review data and experiment outputs before using them in downstream components.
 ## Models
 
 Store generated model files with enough metadata to identify their training run.
+
+## Collaboration
+
+Keep component-specific documentation close to the files it describes.
