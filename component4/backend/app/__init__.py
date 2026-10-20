@@ -64,6 +64,12 @@ def create_app(test_config: dict | None = None) -> Flask:
         ORIENTATION_CLEAR_AFTER_FRAMES=int(
             os.getenv("ORIENTATION_CLEAR_AFTER_FRAMES", "4")
         ),
+        SORTING_EXPECTED_ORIENTATION=os.getenv(
+            "SORTING_EXPECTED_ORIENTATION", "LeftHand"
+        ),
+        SORTING_WARNING_THRESHOLD=int(
+            os.getenv("SORTING_WARNING_THRESHOLD", "3")
+        ),
     )
     if test_config:
         app.config.update(test_config)
@@ -81,6 +87,20 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.register_blueprint(orientation_live_bp, url_prefix="/api/v1/orientation/live")
 
     from app.services.live_orientation import LiveOrientationWorker
+    from app.services.sorting_control import SortingControlService
+
+    def send_sorting_command(command):
+        manager = app.extensions.get("component3_serial_driver")
+        if manager is None:
+            raise RuntimeError("Component 3 serial driver is disabled.")
+        return manager.send_command(command)
+
+    sorting_control = SortingControlService(
+        command_sender=send_sorting_command,
+        expected_orientation=app.config["SORTING_EXPECTED_ORIENTATION"],
+        warning_threshold=app.config["SORTING_WARNING_THRESHOLD"],
+    )
+    app.extensions["sorting_control"] = sorting_control
 
     app.extensions["live_orientation_worker"] = LiveOrientationWorker(
         model_path=app.config["ORIENTATION_MODEL_PATH"],
@@ -88,6 +108,11 @@ def create_app(test_config: dict | None = None) -> Flask:
         smoothing_window=app.config["ORIENTATION_SMOOTHING_WINDOW"],
         minimum_confidence=app.config["ORIENTATION_MIN_CONFIDENCE"],
         clear_after_frames=app.config["ORIENTATION_CLEAR_AFTER_FRAMES"],
+        on_stable_prediction=lambda orientation, confidence: sorting_control.process_decision(
+            orientation=orientation,
+            defective=False,
+            source=f"orientation_model:{confidence:.4f}",
+        ),
     )
 
     if app.config["COMPONENT3_DRIVER_ENABLED"] and not app.config.get("TESTING"):

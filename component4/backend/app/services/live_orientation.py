@@ -20,6 +20,7 @@ class LiveOrientationWorker:
         smoothing_window=7,
         minimum_confidence=0.80,
         clear_after_frames=4,
+        on_stable_prediction=None,
     ):
         self.model_path = Path(model_path)
         self.camera_index = int(camera_index)
@@ -28,6 +29,7 @@ class LiveOrientationWorker:
         self.smoothing_window = max(int(smoothing_window), 3)
         self.minimum_confidence = float(minimum_confidence)
         self.clear_after_frames = max(int(clear_after_frames), 1)
+        self.on_stable_prediction = on_stable_prediction
         self._lock = RLock()
         self._condition = Condition(self._lock)
         self._stop_event = Event()
@@ -170,6 +172,7 @@ class LiveOrientationWorker:
             history = deque(maxlen=self.smoothing_window)
             ema = None
             stable_index = None
+            last_notified_index = None
             uncertain_streak = 0
             previous_time = time.perf_counter()
             while not self._stop_event.is_set():
@@ -199,6 +202,16 @@ class LiveOrientationWorker:
                     uncertain_streak += 1
                     if uncertain_streak >= self.clear_after_frames:
                         stable_index = None
+
+                notify_prediction = None
+                if stable_index is None:
+                    last_notified_index = None
+                elif stable_index != last_notified_index:
+                    last_notified_index = stable_index
+                    notify_prediction = (
+                        self.classes[stable_index],
+                        round(float(ema[stable_index]), 4),
+                    )
 
                 now = time.perf_counter()
                 instant_fps = 1.0 / max(now - previous_time, 1e-6)
@@ -230,6 +243,12 @@ class LiveOrientationWorker:
                     self._frame_count += 1
                     self._frame_jpeg = jpeg.tobytes()
                     self._publish_locked()
+                if notify_prediction and self.on_stable_prediction:
+                    try:
+                        self.on_stable_prediction(*notify_prediction)
+                    except Exception:
+                        # Relay-control failures must not stop camera inference.
+                        pass
         except ImportError as error:
             if not self._stop_event.is_set():
                 detail = str(error)

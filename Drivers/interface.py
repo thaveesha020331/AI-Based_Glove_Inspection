@@ -4,6 +4,7 @@ import json
 import os
 import time
 from threading import Event
+from queue import Empty, Queue
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -18,6 +19,14 @@ BACKEND_URL = os.getenv(
 )
 SERIAL_TIMEOUT_SECONDS = float(os.getenv("COMPONENT3_SERIAL_TIMEOUT", "0.05"))
 RECONNECT_DELAY_SECONDS = float(os.getenv("COMPONENT3_RECONNECT_DELAY", "0.25"))
+
+VALID_COMMANDS = {
+    "DEFECT_PULSE", "ORIENTATION_PULSE",
+    "CAMERA_LIGHT_ON", "CAMERA_LIGHT_OFF",
+    "WARNING_ON", "WARNING_OFF", "ALL_OFF",
+    "R1_ON", "R1_OFF", "R2_ON", "R2_OFF",
+    "R3_ON", "R3_OFF", "R4_ON", "R4_OFF",
+}
 
 
 def publish_status(data):
@@ -54,8 +63,25 @@ class SerialTelemetryDriver:
         self.port = port
         self.baud_rate = int(baud_rate)
         self.stop_event = Event()
+        self.command_queue = Queue()
         self.state = "stopped"
         self.last_error = None
+
+    def send_command(self, command):
+        normalized = str(command).strip().upper()
+        if normalized not in VALID_COMMANDS:
+            raise ValueError(f"Unsupported ESP32 command: {normalized}")
+        self.command_queue.put_nowait(normalized)
+        return True
+
+    def _write_pending_commands(self, serial_connection):
+        while True:
+            try:
+                command = self.command_queue.get_nowait()
+            except Empty:
+                return
+            serial_connection.write(f"{command}\n".encode("ascii"))
+            serial_connection.flush()
 
     def stop(self):
         self.stop_event.set()
@@ -72,6 +98,7 @@ class SerialTelemetryDriver:
                     self.state = "connected"
                     self.last_error = None
                     while not self.stop_event.is_set():
+                        self._write_pending_commands(serial_connection)
                         raw_line = serial_connection.readline()
                         if not raw_line:
                             continue

@@ -3,6 +3,8 @@
 // SERIAL SENSOR + RELAY STATUS
 // =====================================================
 
+#include <Arduino.h>
+
 // -----------------------------------------------------
 // SENSOR PINS
 // -----------------------------------------------------
@@ -38,8 +40,19 @@
 // -----------------------------------------------------
 
 const unsigned long STATUS_INTERVAL_MS = 100;
+const unsigned long SORT_ACTUATION_DELAY_MS = 0;
+const unsigned long SORT_RELAY_PULSE_MS = 500;
 
 unsigned long previousStatusTime = 0;
+
+bool defectPulsePending = false;
+bool orientationPulsePending = false;
+bool defectRelayActive = false;
+bool orientationRelayActive = false;
+unsigned long defectDueAt = 0;
+unsigned long orientationDueAt = 0;
+unsigned long defectOffAt = 0;
+unsigned long orientationOffAt = 0;
 
 
 // =====================================================
@@ -47,7 +60,18 @@ unsigned long previousStatusTime = 0;
 // =====================================================
 
 bool sensorDetected(int pin) {
-  return digitalRead(pin) == SENSOR_ACTIVE;
+  const int FILTER_SAMPLES = 5;
+  const int FILTER_THRESHOLD = 5;
+  int activeCount = 0;
+  for (int index = 0; index < FILTER_SAMPLES; index++) {
+    if (digitalRead(pin) == SENSOR_ACTIVE) {
+      activeCount++;
+    }
+    if (index < FILTER_SAMPLES - 1) {
+      delayMicroseconds(300);
+    }
+  }
+  return activeCount >= FILTER_THRESHOLD;
 }
 
 
@@ -77,6 +101,54 @@ void allRelaysOff() {
   setRelay(RELAY_2, false);
   setRelay(RELAY_3, false);
   setRelay(RELAY_4, false);
+  defectPulsePending = false;
+  orientationPulsePending = false;
+  defectRelayActive = false;
+  orientationRelayActive = false;
+}
+
+
+// R1 = damaged-glove reject, R2 = wrong-orientation reject.
+// The delayed, non-blocking pulse lets serial telemetry continue normally.
+void scheduleSortPulse(bool defective) {
+  unsigned long dueAt = millis() + SORT_ACTUATION_DELAY_MS;
+  if (defective) {
+    // A damaged glove always uses the damage bin; cancel a not-yet-fired
+    // orientation command for the same inspection window.
+    orientationPulsePending = false;
+    defectPulsePending = true;
+    defectDueAt = dueAt;
+  }
+  else {
+    orientationPulsePending = true;
+    orientationDueAt = dueAt;
+  }
+}
+
+
+void updateSortPulses() {
+  unsigned long now = millis();
+
+  if (defectPulsePending && (long)(now - defectDueAt) >= 0) {
+    defectPulsePending = false;
+    defectRelayActive = true;
+    defectOffAt = now + SORT_RELAY_PULSE_MS;
+    setRelay(RELAY_1, true);
+  }
+  if (orientationPulsePending && (long)(now - orientationDueAt) >= 0) {
+    orientationPulsePending = false;
+    orientationRelayActive = true;
+    orientationOffAt = now + SORT_RELAY_PULSE_MS;
+    setRelay(RELAY_2, true);
+  }
+  if (defectRelayActive && (long)(now - defectOffAt) >= 0) {
+    defectRelayActive = false;
+    setRelay(RELAY_1, false);
+  }
+  if (orientationRelayActive && (long)(now - orientationOffAt) >= 0) {
+    orientationRelayActive = false;
+    setRelay(RELAY_2, false);
+  }
 }
 
 
@@ -171,6 +243,10 @@ void sendStatusSerial() {
 // R4_ON
 // R4_OFF
 // ALL_OFF
+// DEFECT_PULSE
+// ORIENTATION_PULSE
+// CAMERA_LIGHT_ON / CAMERA_LIGHT_OFF
+// WARNING_ON / WARNING_OFF
 //
 // =====================================================
 
@@ -229,6 +305,24 @@ void processSerialCommand() {
 
     allRelaysOff();
   }
+  else if (command == "DEFECT_PULSE") {
+    scheduleSortPulse(true);
+  }
+  else if (command == "ORIENTATION_PULSE") {
+    scheduleSortPulse(false);
+  }
+  else if (command == "CAMERA_LIGHT_ON") {
+    setRelay(RELAY_3, true);
+  }
+  else if (command == "CAMERA_LIGHT_OFF") {
+    setRelay(RELAY_3, false);
+  }
+  else if (command == "WARNING_ON") {
+    setRelay(RELAY_4, true);
+  }
+  else if (command == "WARNING_OFF") {
+    setRelay(RELAY_4, false);
+  }
 }
 
 
@@ -240,16 +334,17 @@ void setup() {
 
   Serial.begin(115200);
 
-  delay(2000);
+  Serial.setTimeout(20);
+  delay(500);
 
 
   // ---------------- Sensors ----------------
 
-  pinMode(SPEED_SENSOR_1, INPUT_PULLUP);
-  pinMode(SPEED_SENSOR_2, INPUT_PULLUP);
+  pinMode(SPEED_SENSOR_1, INPUT);
+  pinMode(SPEED_SENSOR_2, INPUT);
 
-  pinMode(VERIFY_SENSOR_1, INPUT_PULLUP);
-  pinMode(VERIFY_SENSOR_2, INPUT_PULLUP);
+  pinMode(VERIFY_SENSOR_1, INPUT);
+  pinMode(VERIFY_SENSOR_2, INPUT);
 
 
   // ---------------- Relays ----------------
@@ -278,6 +373,7 @@ void loop() {
 
   // Receive optional commands from computer
   processSerialCommand();
+  updateSortPulses();
 
 
   // Send status every 500 ms

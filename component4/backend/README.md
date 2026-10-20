@@ -253,6 +253,41 @@ in-process telemetry store and immediately pushes changes to the dashboard over
 arrives within `SORTING_TELEMETRY_STALE_SECONDS`, the device is shown as offline. Set
 `COMPONENT3_DRIVER_ENABLED=false` only when running the driver separately.
 
+### Relay control mapping
+
+The ESP32 firmware and backend use semantic commands instead of exposing raw
+relay control through the dashboard:
+
+* Relay 1: damaged-glove reject gate (`DEFECT_PULSE`)
+* Relay 2: wrong-orientation reject gate (`ORIENTATION_PULSE`)
+* Relay 3: dashboard-controlled camera LED
+* Relay 4: latched consecutive-reject warning light
+
+`SORT_RELAY_PULSE_MS` and `SORT_ACTUATION_DELAY_MS` in
+`firmware/main_engine.ino` must be calibrated for the real pneumatic gate and
+the distance from the camera to the actuator. The default pulse is 500 ms and
+the default delay is zero. Disconnect actuator power while flashing or testing
+new timing values.
+
+The live orientation model automatically sends one decision per stable glove
+observation. Configure the orientation allowed to remain on the main belt with
+`SORTING_EXPECTED_ORIENTATION=LeftHand` or `RightHand`. Three consecutive reject
+decisions latch the warning by default; change this with
+`SORTING_WARNING_THRESHOLD`.
+
+Component 1 can submit a final local damage/orientation decision from the same
+computer. Defect takes priority over orientation for that decision:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:5000/api/v1/sorting/control/decision `
+  -ContentType "application/json" `
+  -Body '{"orientation":"RightHand","defective":true,"source":"component1"}'
+```
+
+Hardware-changing endpoints reject non-loopback clients. This keeps relay
+actuation limited to the backend computer rather than the local network.
+
 ## Frontend checks
 
 From `component4\frontend`:

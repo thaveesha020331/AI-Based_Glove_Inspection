@@ -54,6 +54,16 @@ class SerialDriverManager:
                 "last_error": getattr(self._driver, "last_error", None),
             }
 
+    def send_command(self, command):
+        self.ensure_started()
+        with self._lock:
+            driver = self._driver
+        if driver is None:
+            raise RuntimeError("Serial driver is not available.")
+        if driver.state != "connected":
+            raise RuntimeError("ESP32 serial connection is not ready.")
+        return driver.send_command(command)
+
     def stop(self):
         with self._lock:
             driver = self._driver

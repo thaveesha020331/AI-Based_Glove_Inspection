@@ -4,6 +4,7 @@ import pytest
 
 from app import create_app
 from app.services.sorting_live import sorting_telemetry
+from app.services.sorting_control import SortingControlService
 
 
 @pytest.fixture()
@@ -67,4 +68,36 @@ def test_invalid_driver_payload_is_rejected(client, payload):
 
     assert result.status_code == 400
     assert result.get_json()["error"]["code"] == "validation_error"
+
+
+def test_local_dashboard_can_control_light_and_expected_orientation(client):
+    commands = []
+
+    def send(command):
+        commands.append(command)
+        return True
+
+    client.application.extensions["sorting_control"] = SortingControlService(send)
+
+    configured = client.patch(
+        "/api/v1/sorting/control",
+        json={"expected_orientation": "RightHand"},
+    )
+    light = client.post("/api/v1/sorting/control/light", json={"on": True})
+
+    assert configured.status_code == 200
+    assert configured.get_json()["data"]["expected_orientation"] == "RightHand"
+    assert light.status_code == 200
+    assert commands == ["CAMERA_LIGHT_ON"]
+
+
+def test_hardware_mutation_is_rejected_for_non_local_client(client):
+    result = client.post(
+        "/api/v1/sorting/control/light",
+        json={"on": True},
+        environ_base={"REMOTE_ADDR": "192.0.2.5"},
+    )
+
+    assert result.status_code == 403
+    assert result.get_json()["error"]["code"] == "local_control_only"
 

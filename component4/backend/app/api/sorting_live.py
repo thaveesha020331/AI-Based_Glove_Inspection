@@ -21,7 +21,24 @@ def _with_driver_status(snapshot, manager, config):
         "baud_rate": config.get("COMPONENT3_BAUD_RATE"),
         "last_error": None,
     }
+    control = current_app.extensions.get("sorting_control")
+    snapshot["control"] = control.snapshot() if control else None
     return snapshot
+
+
+def _control():
+    return current_app.extensions["sorting_control"]
+
+
+def _local_control_denied():
+    if request.remote_addr not in {"127.0.0.1", "::1"}:
+        return jsonify({
+            "error": {
+                "code": "local_control_only",
+                "message": "Hardware controls are available only from the backend computer.",
+            }
+        }), 403
+    return None
 
 
 @sorting_live_bp.get("/live")
@@ -60,6 +77,67 @@ def ingest_live_status():
     try:
         snapshot = sorting_telemetry.update(request.get_json(silent=True))
         return response(snapshot, 202)
+    except ValueError as exc:
+        return jsonify({"error": {"code": "validation_error", "message": str(exc)}}), 400
+
+
+@sorting_live_bp.get("/control")
+def control_status():
+    return response(_control().snapshot())
+
+
+@sorting_live_bp.patch("/control")
+def configure_control():
+    denied = _local_control_denied()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or {}
+    try:
+        return response(_control().configure(
+            expected_orientation=payload.get("expected_orientation"),
+            automatic_enabled=payload.get("automatic_enabled"),
+        ))
+    except ValueError as exc:
+        return jsonify({"error": {"code": "validation_error", "message": str(exc)}}), 400
+
+
+@sorting_live_bp.post("/control/light")
+def camera_light():
+    denied = _local_control_denied()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or {}
+    try:
+        data = _control().set_camera_light(payload.get("on"))
+        return response(data, 200 if data["last_error"] is None else 503)
+    except ValueError as exc:
+        return jsonify({"error": {"code": "validation_error", "message": str(exc)}}), 400
+
+
+@sorting_live_bp.post("/control/warning/reset")
+def reset_warning():
+    denied = _local_control_denied()
+    if denied:
+        return denied
+    data = _control().reset_warning()
+    return response(data, 200 if data["last_error"] is None else 503)
+
+
+@sorting_live_bp.post("/control/decision")
+def sorting_decision():
+    """Accept one validated final glove decision from a local detector."""
+    denied = _local_control_denied()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or {}
+    try:
+        data = _control().process_decision(
+            orientation=payload.get("orientation"),
+            defective=payload.get("defective", False),
+            source=payload.get("source", "local_detector"),
+        )
+        queued = data["last_action"].get("command_queued", True) if data["last_action"] else True
+        return response(data, 202 if queued else 503)
     except ValueError as exc:
         return jsonify({"error": {"code": "validation_error", "message": str(exc)}}), 400
 
