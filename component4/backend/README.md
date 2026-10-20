@@ -265,6 +265,48 @@ npm run build
 The build performs the TypeScript check and creates the Vite production bundle.
 No separate lint script is configured in the existing package.
 
+## Live glove orientation
+
+The Live Orientation dashboard starts the backend webcam only when the user
+selects **Start model**. It loads the included MobileNet V2 TorchScript file,
+classifies each frame as `LeftHand` or `RightHand`, and sends a smoothed result
+plus an annotated MJPEG preview to the browser. This model identifies hand
+orientation; it does not classify glove defects or product quality.
+
+Install the backend dependencies and start both applications:
+
+```powershell
+cd component4\backend
+python -m pip install -r requirements.txt
+python -m flask --app run.py run --debug
+
+cd ..\frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173/live-orientation`. Optional settings in `.env` are
+`ORIENTATION_CAMERA_INDEX`, `ORIENTATION_MIN_CONFIDENCE`,
+`ORIENTATION_SMOOTHING_WINDOW`, `ORIENTATION_CLEAR_AFTER_FRAMES`, and
+`ORIENTATION_MODEL_PATH`. Low-confidence frames clear the previous stable result
+and are displayed as `No glove / uncertain`. The default model
+is `ml/quality_detection/weight/mobilenet_v2_classifier.torchscript.pt` and the
+default webcam index is `0`.
+
+On Windows, start the backend with the repository interpreter to avoid loading
+a partially installed Microsoft Store copy of Torch:
+
+```powershell
+cd component4\backend
+.\start_backend.ps1
+```
+
+If PowerShell script execution is disabled, use the interpreter directly:
+
+```powershell
+..\..\.venv\Scripts\python.exe -m flask --app run.py run --debug
+```
+
 ## API endpoint groups
 
 All responses use `{ "data": ..., "meta": ... }` on success and

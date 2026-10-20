@@ -44,6 +44,26 @@ def create_app(test_config: dict | None = None) -> Flask:
             "COMPONENT3_DRIVER_PATH",
             str(Path(app.root_path).parents[2] / "Drivers" / "interface.py"),
         ),
+        ORIENTATION_MODEL_PATH=os.getenv(
+            "ORIENTATION_MODEL_PATH",
+            str(
+                Path(app.root_path).parent
+                / "ml"
+                / "quality_detection"
+                / "weight"
+                / "mobilenet_v2_classifier.torchscript.pt"
+            ),
+        ),
+        ORIENTATION_CAMERA_INDEX=int(os.getenv("ORIENTATION_CAMERA_INDEX", "0")),
+        ORIENTATION_MIN_CONFIDENCE=float(
+            os.getenv("ORIENTATION_MIN_CONFIDENCE", "0.80")
+        ),
+        ORIENTATION_SMOOTHING_WINDOW=int(
+            os.getenv("ORIENTATION_SMOOTHING_WINDOW", "7")
+        ),
+        ORIENTATION_CLEAR_AFTER_FRAMES=int(
+            os.getenv("ORIENTATION_CLEAR_AFTER_FRAMES", "4")
+        ),
     )
     if test_config:
         app.config.update(test_config)
@@ -54,9 +74,21 @@ def create_app(test_config: dict | None = None) -> Flask:
     from app.api.v1 import api_v1_bp
     from app.api.health import health_bp
     from app.api.sorting_live import sorting_live_bp
+    from app.api.orientation_live import orientation_live_bp
     app.register_blueprint(api_v1_bp, url_prefix="/api/v1")
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(sorting_live_bp, url_prefix="/api/v1/sorting")
+    app.register_blueprint(orientation_live_bp, url_prefix="/api/v1/orientation/live")
+
+    from app.services.live_orientation import LiveOrientationWorker
+
+    app.extensions["live_orientation_worker"] = LiveOrientationWorker(
+        model_path=app.config["ORIENTATION_MODEL_PATH"],
+        camera_index=app.config["ORIENTATION_CAMERA_INDEX"],
+        smoothing_window=app.config["ORIENTATION_SMOOTHING_WINDOW"],
+        minimum_confidence=app.config["ORIENTATION_MIN_CONFIDENCE"],
+        clear_after_frames=app.config["ORIENTATION_CLEAR_AFTER_FRAMES"],
+    )
 
     if app.config["COMPONENT3_DRIVER_ENABLED"] and not app.config.get("TESTING"):
         from app.services.serial_driver import SerialDriverManager
