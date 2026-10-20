@@ -54,3 +54,7 @@ Keep component-specific documentation close to the files it describes.
 ## Change scope
 
 Changes to this component should preserve the interfaces consumed by the other components.
+
+## Status
+
+Component 1 documentation is maintained alongside its configuration and experiment resources.
