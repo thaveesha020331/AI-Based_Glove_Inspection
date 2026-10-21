@@ -16,6 +16,17 @@ export type SortingControl = {
   relay_roles: Record<string, string>;
 };
 
+export type SpeedSync = {
+  state: "idle" | "waiting_s1" | "waiting_s2" | "complete" | "error";
+  distance_cm: number;
+  elapsed_ms: number | null;
+  speed_mps: number | null;
+  speed_cmps: number | null;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+};
+
 export function configureSortingControl(payload: {
   expected_orientation?: "LeftHand" | "RightHand";
   automatic_enabled?: boolean;
@@ -29,6 +40,14 @@ export function setCameraLight(on: boolean): Promise<SortingControl> {
 
 export function resetSortingWarning(): Promise<SortingControl> {
   return apiData({ method: "POST", url: "/sorting/control/warning/reset" });
+}
+
+export function startSpeedSync(distanceCm: number): Promise<SpeedSync> {
+  return apiData({
+    method: "POST",
+    url: "/sorting/speed-sync",
+    data: { distance_cm: distanceCm },
+  });
 }
 
 export function subscribeSortingTelemetry(

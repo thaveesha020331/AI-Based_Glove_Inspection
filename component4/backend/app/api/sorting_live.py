@@ -86,6 +86,21 @@ def control_status():
     return response(_control().snapshot())
 
 
+@sorting_live_bp.post("/speed-sync")
+def start_speed_sync():
+    denied = _local_control_denied()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or {}
+    try:
+        return response(
+            sorting_telemetry.arm_speed_sync(payload.get("distance_cm")),
+            202,
+        )
+    except ValueError as exc:
+        return jsonify({"error": {"code": "validation_error", "message": str(exc)}}), 400
+
+
 @sorting_live_bp.patch("/control")
 def configure_control():
     denied = _local_control_denied()

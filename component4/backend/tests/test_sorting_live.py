@@ -101,3 +101,46 @@ def test_hardware_mutation_is_rejected_for_non_local_client(client):
     assert result.status_code == 403
     assert result.get_json()["error"]["code"] == "local_control_only"
 
+
+def test_speed_sync_uses_s1_then_s2_rising_edges(client):
+    def status(uptime_ms, s1=False, s2=False):
+        return {
+            "type": "c3_status",
+            "uptime_ms": uptime_ms,
+            "sensors": {
+                "speed_s1": s1,
+                "speed_s2": s2,
+                "verify_v1": False,
+                "verify_v2": False,
+            },
+            "relays": {
+                "relay1": False,
+                "relay2": False,
+                "relay3": False,
+                "relay4": False,
+            },
+        }
+
+    client.post("/api/v1/sorting/live", json=status(500))
+    armed = client.post("/api/v1/sorting/speed-sync", json={"distance_cm": 100})
+    client.post("/api/v1/sorting/live", json=status(1000, s1=True))
+    client.post("/api/v1/sorting/live", json=status(1500))
+    client.post("/api/v1/sorting/live", json=status(3000, s2=True))
+    result = client.get("/api/v1/sorting/live").get_json()["data"]["speed_sync"]
+
+    assert armed.status_code == 202
+    assert result["state"] == "complete"
+    assert result["elapsed_ms"] == 2000
+    assert result["speed_mps"] == 0.5
+    assert result["speed_cmps"] == 50.0
+
+
+@pytest.mark.parametrize("distance", [None, 0, -1, 10001, "invalid"])
+def test_speed_sync_rejects_invalid_distance(client, distance):
+    result = client.post(
+        "/api/v1/sorting/speed-sync", json={"distance_cm": distance}
+    )
+
+    assert result.status_code == 400
+    assert result.get_json()["error"]["code"] == "validation_error"
+
