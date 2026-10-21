@@ -5,6 +5,8 @@ export type OrientationSnapshot = {
   running: boolean;
   error: string | null;
   camera_index: number;
+  camera_auto_exposure: boolean;
+  camera_auto_exposure_supported: boolean | null;
   model: string;
   classes: string[];
   raw_prediction: string | null;
@@ -17,6 +19,19 @@ export type OrientationSnapshot = {
   frame_count: number;
   stability_window: number;
   minimum_confidence: number;
+  defect_model: string | null;
+  defect_minimum_confidence: number;
+  defective: boolean;
+  defect_category: string | null;
+  defect_confidence: number | null;
+  defect_detections: Array<{
+    class_id: number;
+    category: string;
+    confidence: number;
+    box: number[];
+  }>;
+  defect_inference_ms: number | null;
+  defect_ready: boolean;
   decision_state?: "stopped" | "starting" | "analyzing" | "detected" | "uncertain" | "error";
 };
 
@@ -31,6 +46,10 @@ export function stopOrientation(): Promise<OrientationSnapshot> {
 }
 
 export function orientationVideoUrl(runId: number): string {
+  return `${baseUrl}/orientation/live/orientation-video?run=${runId}`;
+}
+
+export function defectVideoUrl(runId: number): string {
   return `${baseUrl}/orientation/live/video?run=${runId}`;
 }
 

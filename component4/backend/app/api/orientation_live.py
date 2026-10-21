@@ -65,3 +65,25 @@ def video():
                 return
 
     return Response(frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@orientation_live_bp.get("/orientation-video")
+def orientation_video():
+    worker = _worker()
+
+    @stream_with_context
+    def frames():
+        previous = None
+        while True:
+            frame = worker.wait_for_orientation_frame(previous, timeout=1.0)
+            if frame is not None and frame is not previous:
+                previous = frame
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Cache-Control: no-cache\r\n\r\n" + frame + b"\r\n"
+                )
+            if not worker.snapshot()["running"]:
+                return
+
+    return Response(frames(), mimetype="multipart/x-mixed-replace; boundary=frame")

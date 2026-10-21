@@ -300,13 +300,15 @@ npm run build
 The build performs the TypeScript check and creates the Vite production bundle.
 No separate lint script is configured in the existing package.
 
-## Live glove orientation
+## Live glove inspection
 
 The Live Orientation dashboard starts the backend webcam only when the user
-selects **Start model**. It loads the included MobileNet V2 TorchScript file,
-classifies each frame as `LeftHand` or `RightHand`, and sends a smoothed result
-plus an annotated MJPEG preview to the browser. This model identifies hand
-orientation; it does not classify glove defects or product quality.
+selects **Start model**. It loads the included MobileNet V2 TorchScript file for
+`LeftHand`/`RightHand` classification and the Ultralytics YOLO checkpoint for
+`defect-Detection`, `Pinhole`, and `Tear`. Both models share one webcam stream.
+The browser receives smoothed orientation and defect results plus an annotated
+MJPEG preview. A stable defect takes priority and sends `DEFECT_PULSE`; otherwise
+the configured orientation rule determines whether `ORIENTATION_PULSE` is sent.
 
 Install the backend dependencies and start both applications:
 
@@ -323,10 +325,14 @@ npm run dev
 Open `http://localhost:5173/live-orientation`. Optional settings in `.env` are
 `ORIENTATION_CAMERA_INDEX`, `ORIENTATION_MIN_CONFIDENCE`,
 `ORIENTATION_SMOOTHING_WINDOW`, `ORIENTATION_CLEAR_AFTER_FRAMES`, and
-`ORIENTATION_MODEL_PATH`. Low-confidence frames clear the previous stable result
+`ORIENTATION_MODEL_PATH`. `CAMERA_AUTO_EXPOSURE=true` explicitly enables the
+webcam's DirectShow automatic-exposure mode. Defect settings are `DEFECT_MODEL_PATH`,
+`DEFECT_MIN_CONFIDENCE`, `DEFECT_IMAGE_SIZE`, and `DEFECT_INFERENCE_INTERVAL`.
+Running YOLO every second frame by default reduces CPU latency. Low-confidence frames clear the previous stable result
 and are displayed as `No glove / uncertain`. The default model
 is `ml/quality_detection/weight/mobilenet_v2_classifier.torchscript.pt` and the
-default webcam index is `0`.
+default defect model is `ml/defect_detection/weight/best.pt`. The default webcam
+index is `0`.
 
 On Windows, start the backend with the repository interpreter to avoid loading
 a partially installed Microsoft Store copy of Torch:

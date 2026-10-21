@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
-import { Bell, Camera, ChevronDown, Factory, Menu, RadioTower, Search, X } from "lucide-react";
+import { Bell, Camera, ChevronDown, Factory, Menu, RadioTower, ScanSearch, Search, X } from "lucide-react";
 
 const navigation = [
   { label: "Overview", path: "/", icon: "◈" }, { label: "Production Analytics", path: "/production", icon: "▥" },
   { label: "Sorting System", path: "/sorting-system", icon: <RadioTower size={16} /> },
   { label: "Live Orientation", path: "/live-orientation", icon: <Camera size={16} /> },
+  { label: "Live Defect Detection", path: "/live-defects", icon: <ScanSearch size={16} /> },
   { label: "Defect Analysis", path: "/defects", icon: "◌" }, { label: "Batch Quality", path: "/batches", icon: "✓" },
   { label: "Predictive Analytics", path: "/predictions", icon: "⌁" }, { label: "Alerts & Recommendations", path: "/alerts", icon: "!" },
   { label: "Reports", path: "/reports", icon: "▤" }, { label: "Historical Records", path: "/history", icon: "◷" },

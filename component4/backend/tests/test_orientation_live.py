@@ -32,6 +32,9 @@ class FakeOrientationWorker:
     def wait_for_frame(self, _previous, timeout=1.0):
         return b"fake-jpeg"
 
+    def wait_for_orientation_frame(self, _previous, timeout=1.0):
+        return b"orientation-only-jpeg"
+
 
 @pytest.fixture()
 def client():
@@ -75,6 +78,16 @@ def test_orientation_video_is_mjpeg(client):
     assert b"fake-jpeg" in first_frame
 
 
+def test_orientation_only_video_is_mjpeg(client):
+    client.post("/api/v1/orientation/live/start")
+    response = client.get("/api/v1/orientation/live/orientation-video", buffered=False)
+    first_frame = next(response.response)
+    response.close()
+
+    assert response.mimetype == "multipart/x-mixed-replace"
+    assert b"orientation-only-jpeg" in first_frame
+
+
 def test_worker_reports_uncertain_after_analysis_without_stable_result(tmp_path):
     worker = LiveOrientationWorker(tmp_path / "model.pt", minimum_confidence=0.80)
     worker._state = "running"
@@ -84,3 +97,7 @@ def test_worker_reports_uncertain_after_analysis_without_stable_result(tmp_path)
 
     assert snapshot["decision_state"] == "uncertain"
     assert snapshot["minimum_confidence"] == 0.80
+    assert snapshot["camera_auto_exposure"] is True
+    assert snapshot["camera_auto_exposure_supported"] is None
+    assert snapshot["defective"] is False
+    assert snapshot["defect_ready"] is False

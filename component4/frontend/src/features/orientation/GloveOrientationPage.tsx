@@ -11,11 +11,15 @@ import {
 
 const initialSnapshot: OrientationSnapshot = {
   state: "stopped", running: false, error: null, camera_index: 0,
+  camera_auto_exposure: true, camera_auto_exposure_supported: null,
   model: "mobilenet_v2_classifier.torchscript.pt", classes: ["LeftHand", "RightHand"],
   raw_prediction: null, raw_confidence: null, stable_prediction: null,
   stable_confidence: null, probabilities: { LeftHand: 0, RightHand: 0 },
   fps: 0, inference_ms: null, frame_count: 0, stability_window: 7,
   minimum_confidence: 0.80, decision_state: "stopped",
+  defect_model: "best.pt", defect_minimum_confidence: 0.50,
+  defective: false, defect_category: null, defect_confidence: null,
+  defect_detections: [], defect_inference_ms: null, defect_ready: false,
 };
 
 function percent(value: number | null | undefined): string {
@@ -65,7 +69,7 @@ export function GloveOrientationPage() {
 
   return <main className="page-grid min-h-[calc(100vh-76px)] p-4 sm:p-5 lg:p-8"><div className="mx-auto max-w-[1500px]">
     <div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end">
-      <div><p className="text-xs font-bold uppercase tracking-[.16em] text-brand">Component 4 - Live vision</p><h2 className="heading mt-2 text-2xl font-extrabold tracking-tight text-ink sm:text-[30px]">Glove Hand Orientation</h2><p className="mt-1 text-sm text-muted">Classify a visible glove as left or right hand. Empty and uncertain frames are rejected.</p></div>
+      <div><p className="text-xs font-bold uppercase tracking-[.16em] text-brand">Component 4 - Live vision</p><h2 className="heading mt-2 text-2xl font-extrabold tracking-tight text-ink sm:text-[30px]">Glove Hand Orientation</h2><p className="mt-1 text-sm text-muted">Classify a visible glove as left or right hand in real time.</p></div>
       <div className="flex flex-wrap items-center gap-3"><span className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-extrabold ${statusStyle}`}>{snapshot.state === "starting" ? <LoaderCircle className="animate-spin" size={15} /> : <Activity size={15} />}{status}</span>{snapshot.running ? <button disabled={busy} onClick={stop} className="focus-ring inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2.5 text-xs font-extrabold text-white hover:bg-red-700 disabled:opacity-50"><Square size={14} fill="currentColor" />Stop model</button> : <button disabled={busy} onClick={start} className="focus-ring inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-xs font-extrabold text-white hover:opacity-90 disabled:opacity-50"><Play size={15} fill="currentColor" />Start model</button>}</div>
     </div>
 
@@ -73,7 +77,7 @@ export function GloveOrientationPage() {
 
     <div className="grid gap-5 xl:grid-cols-[1.35fr_.65fr]">
       <section className="overflow-hidden rounded-2xl border border-line bg-[#101925] shadow-soft">
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4 text-white"><div><h3 className="heading text-sm font-bold">Backend camera feed</h3><p className="mt-1 text-[11px] text-slate-400">Camera {snapshot.camera_index} - center crop - 192 x 192 inference</p></div><span className={`h-2.5 w-2.5 rounded-full ${snapshot.state === "running" ? "animate-pulse bg-emerald-400" : "bg-slate-600"}`} /></div>
+        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4 text-white"><div><h3 className="heading text-sm font-bold">Orientation camera feed</h3><p className="mt-1 text-[11px] text-slate-400">Camera {snapshot.camera_index} - auto exposure {snapshot.camera_auto_exposure ? snapshot.camera_auto_exposure_supported === false ? "unsupported" : "on" : "off"} - 192 x 192 inference</p></div><span className={`h-2.5 w-2.5 rounded-full ${snapshot.state === "running" ? "animate-pulse bg-emerald-400" : "bg-slate-600"}`} /></div>
         <div className="relative grid min-h-[390px] place-items-center bg-[#0a111b]">{snapshot.running ? <img key={runId} src={orientationVideoUrl(runId)} className="h-full max-h-[620px] w-full object-contain" alt="Live glove orientation camera" /> : <div className="px-6 text-center text-slate-400"><VideoOff className="mx-auto" size={44} strokeWidth={1.4} /><p className="mt-4 text-sm font-bold text-slate-200">Camera is off</p><p className="mt-1 max-w-sm text-xs leading-5">Select Start model to load the model and open the backend webcam.</p></div>}<div className="absolute bottom-4 left-4 rounded-lg bg-black/65 px-3 py-2 text-[10px] font-semibold text-slate-200 backdrop-blur">{streamConnected ? "STATUS STREAM CONNECTED" : "STATUS STREAM RECONNECTING"}</div></div>
       </section>
 
@@ -85,6 +89,6 @@ export function GloveOrientationPage() {
       </section>
     </div>
 
-    <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Stable confidence" value={percent(snapshot.stable_confidence)} detail="EMA + majority vote" icon={Gauge} /><Metric label="Camera throughput" value={`${snapshot.fps.toFixed(1)} FPS`} detail={`${snapshot.frame_count.toLocaleString()} frames processed`} icon={Camera} /><Metric label="Inference latency" value={snapshot.inference_ms === null ? "-" : `${snapshot.inference_ms.toFixed(1)} ms`} detail="CPU TorchScript inference" icon={Timer} /><Metric label="Decision threshold" value={percent(snapshot.minimum_confidence)} detail={`${snapshot.stability_window}-frame stability window`} icon={ScanLine} /></div>
+    <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Stable confidence" value={percent(snapshot.stable_confidence)} detail="EMA + majority vote" icon={Gauge} /><Metric label="Camera throughput" value={`${snapshot.fps.toFixed(1)} FPS`} detail={`${snapshot.frame_count.toLocaleString()} frames processed`} icon={Camera} /><Metric label="Inference latency" value={snapshot.inference_ms === null ? "-" : `${snapshot.inference_ms.toFixed(1)} ms`} detail="Orientation model CPU inference" icon={Timer} /><Metric label="Decision threshold" value={percent(snapshot.minimum_confidence)} detail={`${snapshot.stability_window}-frame stability window`} icon={ScanLine} /></div>
   </div></main>;
 }
