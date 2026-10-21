@@ -13,7 +13,7 @@ DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "weight" / "best.pt"
 class DefectDetector:
     """Load an Ultralytics checkpoint once and run low-latency frame inference."""
 
-    def __init__(self, model_path=DEFAULT_MODEL_PATH, confidence=0.50, image_size=640):
+    def __init__(self, model_path=DEFAULT_MODEL_PATH, confidence=0.30, image_size=640):
         self.model_path = Path(model_path)
         self.confidence = float(confidence)
         self.image_size = int(image_size)
@@ -75,7 +75,7 @@ def main():
     parser = argparse.ArgumentParser(description="Detect glove defects in an image.")
     parser.add_argument("image", type=Path)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH)
-    parser.add_argument("--confidence", type=float, default=0.50)
+    parser.add_argument("--confidence", type=float, default=0.30)
     parser.add_argument("--image-size", type=int, default=640)
     args = parser.parse_args()
     prediction = DefectDetector(

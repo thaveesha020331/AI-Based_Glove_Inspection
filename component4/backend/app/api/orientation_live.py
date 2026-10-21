@@ -2,7 +2,7 @@
 
 import json
 
-from flask import Blueprint, Response, current_app, jsonify, stream_with_context
+from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
 
 
 orientation_live_bp = Blueprint("orientation_live", __name__)
@@ -19,12 +19,27 @@ def status():
 
 @orientation_live_bp.post("/start")
 def start():
-    return jsonify({"data": _worker().start()}), 202
+    payload = request.get_json(silent=True) or {}
+    try:
+        snapshot = _worker().start(payload.get("mode", "orientation"))
+    except ValueError as error:
+        return jsonify({"error": {"code": "invalid_inference_mode", "message": str(error)}}), 400
+    return jsonify({"data": snapshot}), 202
 
 
 @orientation_live_bp.post("/stop")
 def stop():
     return jsonify({"data": _worker().stop()})
+
+
+@orientation_live_bp.patch("/camera")
+def configure_camera():
+    payload = request.get_json(silent=True) or {}
+    try:
+        snapshot = _worker().configure_camera(payload.get("exposure"))
+    except ValueError as error:
+        return jsonify({"error": {"code": "invalid_camera_setting", "message": str(error)}}), 400
+    return jsonify({"data": snapshot})
 
 
 @orientation_live_bp.get("/stream")

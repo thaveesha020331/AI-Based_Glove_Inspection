@@ -310,6 +310,11 @@ The browser receives smoothed orientation and defect results plus an annotated
 MJPEG preview. A stable defect takes priority and sends `DEFECT_PULSE`; otherwise
 the configured orientation rule determines whether `ORIENTATION_PULSE` is sent.
 
+Only one vision model is loaded at a time. Starting the Live Orientation page
+loads MobileNet only; starting the Live Defect Detection page stops the previous
+mode and loads YOLO only. This avoids making every camera frame wait for both
+CPU models.
+
 Install the backend dependencies and start both applications:
 
 ```powershell
@@ -325,8 +330,12 @@ npm run dev
 Open `http://localhost:5173/live-orientation`. Optional settings in `.env` are
 `ORIENTATION_CAMERA_INDEX`, `ORIENTATION_MIN_CONFIDENCE`,
 `ORIENTATION_SMOOTHING_WINDOW`, `ORIENTATION_CLEAR_AFTER_FRAMES`, and
-`ORIENTATION_MODEL_PATH`. `CAMERA_AUTO_EXPOSURE=true` explicitly enables the
-webcam's DirectShow automatic-exposure mode. Defect settings are `DEFECT_MODEL_PATH`,
+`ORIENTATION_MODEL_PATH`. Manual exposure is enabled by default with
+`CAMERA_AUTO_EXPOSURE=false`, `CAMERA_EXPOSURE=-2`, and `CAMERA_GAIN=0` to avoid
+washed-out inspection images. Set `CAMERA_AUTO_EXPOSURE=true` if automatic
+exposure is preferred. The dashboard control changes the webcam's hardware
+exposure directly within this camera's tested `-7` to
+`-2` range; no software exposure filter is applied. Defect settings are `DEFECT_MODEL_PATH`,
 `DEFECT_MIN_CONFIDENCE`, `DEFECT_IMAGE_SIZE`, and `DEFECT_INFERENCE_INTERVAL`.
 Running YOLO every second frame by default reduces CPU latency. Low-confidence frames clear the previous stable result
 and are displayed as `No glove / uncertain`. The default model

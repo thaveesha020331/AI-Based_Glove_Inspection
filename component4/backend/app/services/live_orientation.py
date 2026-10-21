@@ -15,22 +15,27 @@ class LiveOrientationWorker:
         self,
         model_path,
         camera_index=0,
-        camera_auto_exposure=True,
+        camera_auto_exposure=False,
+        camera_exposure=-2,
+        camera_gain=0,
         classes=("LeftHand", "RightHand"),
         image_size=192,
         smoothing_window=7,
-        minimum_confidence=0.80,
+        minimum_confidence=0.60,
         clear_after_frames=4,
         on_stable_prediction=None,
         defect_model_path=None,
-        defect_min_confidence=0.50,
+        defect_min_confidence=0.30,
         defect_image_size=640,
         defect_inference_interval=2,
         on_inspection=None,
+        on_stable_defect=None,
     ):
         self.model_path = Path(model_path)
         self.camera_index = int(camera_index)
         self.camera_auto_exposure = bool(camera_auto_exposure)
+        self.camera_exposure = float(camera_exposure)
+        self.camera_gain = float(camera_gain)
         self.classes = tuple(classes)
         self.image_size = int(image_size)
         self.smoothing_window = max(int(smoothing_window), 3)
@@ -42,6 +47,7 @@ class LiveOrientationWorker:
         self.defect_image_size = int(defect_image_size)
         self.defect_inference_interval = max(int(defect_inference_interval), 1)
         self.on_inspection = on_inspection
+        self.on_stable_defect = on_stable_defect
         self._lock = RLock()
         self._condition = Condition(self._lock)
         self._stop_event = Event()
@@ -51,6 +57,7 @@ class LiveOrientationWorker:
         self._orientation_frame_jpeg = None
         self._version = 0
         self._state = "stopped"
+        self._mode = None
         self._error = None
         self._raw_prediction = None
         self._raw_confidence = None
@@ -67,11 +74,22 @@ class LiveOrientationWorker:
         self._defect_inference_ms = None
         self._defect_ready = False
         self._auto_exposure_supported = None
+        self._manual_exposure_supported = None
+        self._actual_exposure = None
+        self._actual_gain = None
 
-    def start(self):
+    def start(self, mode="orientation"):
+        if mode not in {"orientation", "defect"}:
+            raise ValueError("mode must be orientation or defect.")
+        with self._lock:
+            running = self._thread is not None and self._thread.is_alive()
+            current_mode = self._mode
+        if running and current_mode != mode:
+            self.stop()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return self.snapshot()
+            self._mode = mode
             self._stop_event.clear()
             self._state = "starting"
             self._error = None
@@ -90,6 +108,9 @@ class LiveOrientationWorker:
             self._defect_inference_ms = None
             self._defect_ready = False
             self._auto_exposure_supported = None
+            self._manual_exposure_supported = None
+            self._actual_exposure = None
+            self._actual_gain = None
             self._frame_jpeg = None
             self._orientation_frame_jpeg = None
             self._thread = Thread(
@@ -116,15 +137,47 @@ class LiveOrientationWorker:
             self._publish_locked()
         return self.snapshot()
 
+    def configure_camera(self, exposure):
+        try:
+            exposure = float(exposure)
+        except (TypeError, ValueError) as error:
+            raise ValueError("exposure must be a number.") from error
+        if exposure < -7 or exposure > -2:
+            raise ValueError("exposure must be between -7 and -2.")
+
+        with self._lock:
+            self.camera_auto_exposure = False
+            self.camera_exposure = exposure
+            capture = self._capture
+            if capture is not None:
+                import cv2
+
+                capture.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+                exposure_set = bool(capture.set(cv2.CAP_PROP_EXPOSURE, exposure))
+                self._manual_exposure_supported = exposure_set
+                self._actual_exposure = round(
+                    float(capture.get(cv2.CAP_PROP_EXPOSURE)), 2
+                )
+            else:
+                self._actual_exposure = None
+            self._publish_locked()
+            return self.snapshot()
+
     def snapshot(self):
         with self._lock:
             return {
                 "state": self._state,
+                "mode": self._mode,
                 "running": self._state in {"starting", "running"},
                 "error": self._error,
                 "camera_index": self.camera_index,
                 "camera_auto_exposure": self.camera_auto_exposure,
                 "camera_auto_exposure_supported": self._auto_exposure_supported,
+                "camera_exposure": self.camera_exposure,
+                "camera_gain": self.camera_gain,
+                "camera_manual_exposure_supported": self._manual_exposure_supported,
+                "camera_actual_exposure": self._actual_exposure,
+                "camera_actual_gain": self._actual_gain,
                 "model": self.model_path.name,
                 "classes": list(self.classes),
                 "raw_prediction": self._raw_prediction,
@@ -151,6 +204,10 @@ class LiveOrientationWorker:
     def _decision_state_locked(self):
         if self._state != "running":
             return self._state
+        if self._mode == "defect":
+            if not self._defect_ready:
+                return "analyzing"
+            return "detected" if self._defective else "clear"
         if self._stable_prediction is not None:
             return "detected"
         if self._frame_count < self.smoothing_window:
@@ -198,12 +255,17 @@ class LiveOrientationWorker:
 
             from ml.defect_detection import DefectDetector
 
-            if not self.model_path.is_file():
-                raise FileNotFoundError(f"Model not found: {self.model_path}")
             torch.set_num_threads(max(1, min(torch.get_num_threads(), 4)))
-            model = torch.jit.load(str(self.model_path), map_location="cpu").eval()
+            mode = self._mode
+            model = None
             defect_detector = None
-            if self.defect_model_path is not None:
+            if mode == "orientation":
+                if not self.model_path.is_file():
+                    raise FileNotFoundError(f"Model not found: {self.model_path}")
+                model = torch.jit.load(str(self.model_path), map_location="cpu").eval()
+            elif mode == "defect":
+                if self.defect_model_path is None:
+                    raise FileNotFoundError("Defect model path is not configured.")
                 defect_detector = DefectDetector(
                     self.defect_model_path,
                     confidence=self.defect_min_confidence,
@@ -225,9 +287,21 @@ class LiveOrientationWorker:
             auto_exposure_supported = bool(
                 capture.set(cv2.CAP_PROP_AUTO_EXPOSURE, auto_exposure_value)
             )
+            manual_exposure_supported = None
+            if not self.camera_auto_exposure:
+                exposure_set = bool(
+                    capture.set(cv2.CAP_PROP_EXPOSURE, self.camera_exposure)
+                )
+                gain_set = bool(capture.set(cv2.CAP_PROP_GAIN, self.camera_gain))
+                manual_exposure_supported = exposure_set and gain_set
+            actual_exposure = float(capture.get(cv2.CAP_PROP_EXPOSURE))
+            actual_gain = float(capture.get(cv2.CAP_PROP_GAIN))
             with self._lock:
                 self._capture = capture
                 self._auto_exposure_supported = auto_exposure_supported
+                self._manual_exposure_supported = manual_exposure_supported
+                self._actual_exposure = round(actual_exposure, 2)
+                self._actual_gain = round(actual_gain, 2)
                 self._state = "running"
                 self._error = None
                 self._publish_locked()
@@ -238,6 +312,7 @@ class LiveOrientationWorker:
             stable_index = None
             last_notified_index = None
             inspection_notified = False
+            defect_notified = False
             uncertain_streak = 0
             defect_result = {
                 "defective": False,
@@ -252,14 +327,52 @@ class LiveOrientationWorker:
                 ok, frame = capture.read()
                 if not ok:
                     raise RuntimeError("Webcam stopped returning frames")
-                started = time.perf_counter()
-                tensor = self._preprocess(frame, cv2, np, torch)
-                with torch.inference_mode():
-                    logits = model(tensor)
-                    if isinstance(logits, (tuple, list)):
-                        logits = logits[0]
-                    probabilities = torch.softmax(logits, dim=1)[0].cpu().numpy()
-                inference_ms = (time.perf_counter() - started) * 1000
+                probabilities = None
+                inference_ms = None
+                raw_index = None
+                raw_name = None
+                stable_name = None
+                notify_prediction = None
+
+                if model is not None:
+                    started = time.perf_counter()
+                    tensor = self._preprocess(frame, cv2, np, torch)
+                    with torch.inference_mode():
+                        logits = model(tensor)
+                        if isinstance(logits, (tuple, list)):
+                            logits = logits[0]
+                        probabilities = torch.softmax(logits, dim=1)[0].cpu().numpy()
+                    inference_ms = (time.perf_counter() - started) * 1000
+
+                    ema = probabilities if ema is None else 0.28 * probabilities + 0.72 * ema
+                    raw_index = int(probabilities.argmax())
+                    candidate = int(ema.argmax())
+                    history.append(candidate)
+                    agreement = sum(index == candidate for index in history)
+                    required = max(3, int(len(history) * 0.7 + 0.5))
+                    is_confident = float(ema[candidate]) >= self.minimum_confidence
+                    if len(history) >= 3 and agreement >= required and is_confident:
+                        stable_index = candidate
+                        uncertain_streak = 0
+                    else:
+                        uncertain_streak += 1
+                        if uncertain_streak >= self.clear_after_frames:
+                            stable_index = None
+
+                    if stable_index is None:
+                        last_notified_index = None
+                    elif stable_index != last_notified_index:
+                        last_notified_index = stable_index
+                        notify_prediction = (
+                            self.classes[stable_index],
+                            round(float(ema[stable_index]), 4),
+                        )
+                    raw_name = self.classes[raw_index]
+                    stable_name = (
+                        self.classes[stable_index]
+                        if stable_index is not None
+                        else None
+                    )
                 defect_ran = False
 
                 if (
@@ -279,33 +392,6 @@ class LiveOrientationWorker:
                         else (None, None)
                     )
 
-                ema = probabilities if ema is None else 0.28 * probabilities + 0.72 * ema
-                raw_index = int(probabilities.argmax())
-                candidate = int(ema.argmax())
-                history.append(candidate)
-                agreement = sum(index == candidate for index in history)
-                required = max(3, int(len(history) * 0.7 + 0.5))
-                is_confident = float(ema[candidate]) >= self.minimum_confidence
-                if len(history) >= 3 and agreement >= required and is_confident:
-                    stable_index = candidate
-                    uncertain_streak = 0
-                else:
-                    uncertain_streak += 1
-                    if uncertain_streak >= self.clear_after_frames:
-                        stable_index = None
-
-                notify_prediction = None
-                if stable_index is None:
-                    last_notified_index = None
-                    inspection_notified = False
-                elif stable_index != last_notified_index:
-                    last_notified_index = stable_index
-                    inspection_notified = False
-                    notify_prediction = (
-                        self.classes[stable_index],
-                        round(float(ema[stable_index]), 4),
-                    )
-
                 defect_ready = len(defect_history) == defect_history.maxlen
                 stable_defect = None
                 stable_defect_confidence = None
@@ -323,6 +409,16 @@ class LiveOrientationWorker:
                                 if category == stable_defect and confidence is not None
                             )
 
+                notify_defect = None
+                if stable_defect is None:
+                    defect_notified = False
+                elif not defect_notified:
+                    defect_notified = True
+                    notify_defect = (
+                        stable_defect,
+                        stable_defect_confidence,
+                    )
+
                 notify_inspection = None
                 if stable_index is not None and defect_ready and not inspection_notified:
                     inspection_notified = True
@@ -338,43 +434,55 @@ class LiveOrientationWorker:
                 instant_fps = 1.0 / max(now - previous_time, 1e-6)
                 previous_time = now
                 self._fps = instant_fps if self._fps == 0 else self._fps * 0.85 + instant_fps * 0.15
-                raw_name = self.classes[raw_index]
-                stable_name = self.classes[stable_index] if stable_index is not None else None
                 annotated_source = (
                     defect_result.get("annotated_frame") if defect_ran else None
                 )
-                orientation_annotated = self._annotate(
-                    frame,
-                    cv2,
-                    stable_name,
-                    float(ema.max()),
-                    inference_ms,
-                    uncertain=stable_index is None and uncertain_streak >= self.clear_after_frames,
-                )
-                annotated = self._annotate(
-                    annotated_source if annotated_source is not None else frame,
-                    cv2,
-                    stable_name,
-                    float(ema.max()),
-                    inference_ms,
-                    uncertain=stable_index is None and uncertain_streak >= self.clear_after_frames,
-                )
+                if model is not None:
+                    orientation_annotated = self._annotate(
+                        frame,
+                        cv2,
+                        stable_name,
+                        float(ema.max()),
+                        inference_ms,
+                        uncertain=stable_index is None
+                        and uncertain_streak >= self.clear_after_frames,
+                    )
+                    annotated = orientation_annotated
+                else:
+                    orientation_annotated = frame
+                    annotated = (
+                        annotated_source if annotated_source is not None else frame
+                    )
                 encoded, jpeg = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
-                orientation_encoded, orientation_jpeg = cv2.imencode(
-                    ".jpg", orientation_annotated, [cv2.IMWRITE_JPEG_QUALITY, 82]
-                )
+                orientation_encoded, orientation_jpeg = encoded, jpeg
                 if not encoded or not orientation_encoded:
                     continue
                 with self._lock:
-                    self._raw_prediction = raw_name
-                    self._raw_confidence = round(float(probabilities[raw_index]), 4)
-                    self._stable_prediction = stable_name
-                    self._stable_confidence = round(float(ema[stable_index]), 4) if stable_index is not None else None
-                    self._probabilities = {
-                        name: round(float(ema[index]), 4)
-                        for index, name in enumerate(self.classes)
-                    }
-                    self._inference_ms = round(inference_ms, 2)
+                    if model is not None:
+                        self._raw_prediction = raw_name
+                        self._raw_confidence = round(
+                            float(probabilities[raw_index]), 4
+                        )
+                        self._stable_prediction = stable_name
+                        self._stable_confidence = (
+                            round(float(ema[stable_index]), 4)
+                            if stable_index is not None
+                            else None
+                        )
+                        self._probabilities = {
+                            name: round(float(ema[index]), 4)
+                            for index, name in enumerate(self.classes)
+                        }
+                        self._inference_ms = round(inference_ms, 2)
+                    else:
+                        self._raw_prediction = None
+                        self._raw_confidence = None
+                        self._stable_prediction = None
+                        self._stable_confidence = None
+                        self._probabilities = {
+                            name: 0.0 for name in self.classes
+                        }
+                        self._inference_ms = None
                     self._defective = stable_defect is not None
                     self._defect_category = stable_defect
                     self._defect_confidence = stable_defect_confidence
@@ -394,6 +502,12 @@ class LiveOrientationWorker:
                         self.on_stable_prediction(*notify_prediction)
                     except Exception:
                         # Relay-control failures must not stop camera inference.
+                        pass
+                if notify_defect and self.on_stable_defect:
+                    try:
+                        self.on_stable_defect(*notify_defect)
+                    except Exception:
+                        # Hardware-control failures must not stop camera inference.
                         pass
                 if notify_inspection and self.on_inspection:
                     try:

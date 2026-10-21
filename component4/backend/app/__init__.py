@@ -56,10 +56,12 @@ def create_app(test_config: dict | None = None) -> Flask:
         ),
         ORIENTATION_CAMERA_INDEX=int(os.getenv("ORIENTATION_CAMERA_INDEX", "0")),
         CAMERA_AUTO_EXPOSURE=os.getenv(
-            "CAMERA_AUTO_EXPOSURE", "true"
+            "CAMERA_AUTO_EXPOSURE", "false"
         ).strip().casefold() in {"1", "true", "yes", "on"},
+        CAMERA_EXPOSURE=float(os.getenv("CAMERA_EXPOSURE", "-2")),
+        CAMERA_GAIN=float(os.getenv("CAMERA_GAIN", "0")),
         ORIENTATION_MIN_CONFIDENCE=float(
-            os.getenv("ORIENTATION_MIN_CONFIDENCE", "0.80")
+            os.getenv("ORIENTATION_MIN_CONFIDENCE", "0.60")
         ),
         ORIENTATION_SMOOTHING_WINDOW=int(
             os.getenv("ORIENTATION_SMOOTHING_WINDOW", "7")
@@ -77,7 +79,7 @@ def create_app(test_config: dict | None = None) -> Flask:
                 / "best.pt"
             ),
         ),
-        DEFECT_MIN_CONFIDENCE=float(os.getenv("DEFECT_MIN_CONFIDENCE", "0.50")),
+        DEFECT_MIN_CONFIDENCE=float(os.getenv("DEFECT_MIN_CONFIDENCE", "0.30")),
         DEFECT_IMAGE_SIZE=int(os.getenv("DEFECT_IMAGE_SIZE", "640")),
         DEFECT_INFERENCE_INTERVAL=int(os.getenv("DEFECT_INFERENCE_INTERVAL", "2")),
         SORTING_EXPECTED_ORIENTATION=os.getenv(
@@ -122,6 +124,8 @@ def create_app(test_config: dict | None = None) -> Flask:
         model_path=app.config["ORIENTATION_MODEL_PATH"],
         camera_index=app.config["ORIENTATION_CAMERA_INDEX"],
         camera_auto_exposure=app.config["CAMERA_AUTO_EXPOSURE"],
+        camera_exposure=app.config["CAMERA_EXPOSURE"],
+        camera_gain=app.config["CAMERA_GAIN"],
         smoothing_window=app.config["ORIENTATION_SMOOTHING_WINDOW"],
         minimum_confidence=app.config["ORIENTATION_MIN_CONFIDENCE"],
         clear_after_frames=app.config["ORIENTATION_CLEAR_AFTER_FRAMES"],
@@ -129,6 +133,16 @@ def create_app(test_config: dict | None = None) -> Flask:
         defect_min_confidence=app.config["DEFECT_MIN_CONFIDENCE"],
         defect_image_size=app.config["DEFECT_IMAGE_SIZE"],
         defect_inference_interval=app.config["DEFECT_INFERENCE_INTERVAL"],
+        on_stable_prediction=lambda orientation, confidence: sorting_control.process_decision(
+            orientation=orientation,
+            defective=False,
+            source=f"orientation_model:{confidence:.4f}",
+        ),
+        on_stable_defect=lambda category, confidence: sorting_control.process_decision(
+            orientation=None,
+            defective=True,
+            source=f"defect_model:{category}:{confidence:.4f}",
+        ),
         on_inspection=lambda orientation, orientation_confidence, defective, defect_category, defect_confidence: sorting_control.process_decision(
             orientation=orientation,
             defective=defective,

@@ -2,11 +2,17 @@ import { api, apiData } from "./api";
 
 export type OrientationSnapshot = {
   state: "stopped" | "starting" | "running" | "error";
+  mode: "orientation" | "defect" | null;
   running: boolean;
   error: string | null;
   camera_index: number;
   camera_auto_exposure: boolean;
   camera_auto_exposure_supported: boolean | null;
+  camera_exposure: number;
+  camera_gain: number;
+  camera_manual_exposure_supported: boolean | null;
+  camera_actual_exposure: number | null;
+  camera_actual_gain: number | null;
   model: string;
   classes: string[];
   raw_prediction: string | null;
@@ -32,17 +38,25 @@ export type OrientationSnapshot = {
   }>;
   defect_inference_ms: number | null;
   defect_ready: boolean;
-  decision_state?: "stopped" | "starting" | "analyzing" | "detected" | "uncertain" | "error";
+  decision_state?: "stopped" | "starting" | "analyzing" | "detected" | "clear" | "uncertain" | "error";
 };
 
 const baseUrl = String(api.defaults.baseURL).replace(/\/$/, "");
 
 export function startOrientation(): Promise<OrientationSnapshot> {
-  return apiData({ method: "POST", url: "/orientation/live/start" });
+  return apiData({ method: "POST", url: "/orientation/live/start", data: { mode: "orientation" } });
+}
+
+export function startDefectDetection(): Promise<OrientationSnapshot> {
+  return apiData({ method: "POST", url: "/orientation/live/start", data: { mode: "defect" } });
 }
 
 export function stopOrientation(): Promise<OrientationSnapshot> {
   return apiData({ method: "POST", url: "/orientation/live/stop" });
+}
+
+export function setCameraExposure(exposure: number): Promise<OrientationSnapshot> {
+  return apiData({ method: "PATCH", url: "/orientation/live/camera", data: { exposure } });
 }
 
 export function orientationVideoUrl(runId: number): string {
