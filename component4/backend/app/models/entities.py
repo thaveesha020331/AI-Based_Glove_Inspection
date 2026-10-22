@@ -113,6 +113,7 @@ class PredictionRecord(TimestampMixin, db.Model):
     batch_id = db.Column(db.String(64), db.ForeignKey("batches.batch_id"), nullable=False)
     predicted_risk_category = db.Column(db.String(30), nullable=False)
     predicted_probability = db.Column(Numeric(8, 5))
+    probability_scores = db.Column(JSON, nullable=False, default=dict)
     model_version = db.Column(db.String(100), nullable=False)
     prediction_time = db.Column(db.DateTime(timezone=True), nullable=False)
     prediction_status = db.Column(db.String(30), nullable=False, default="Completed")
