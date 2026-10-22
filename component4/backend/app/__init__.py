@@ -31,7 +31,7 @@ def create_app(test_config: dict | None = None) -> Flask:
         RISK_HIGH_PROBABILITY=float(os.getenv("RISK_HIGH_PROBABILITY", "0.66")),
         PREDICTIVE_RANDOM_STATE=int(os.getenv("PREDICTIVE_RANDOM_STATE", "42")),
         PREDICTIVE_N_ESTIMATORS=int(os.getenv("PREDICTIVE_N_ESTIMATORS", "300")),
-        PREDICTIVE_MIN_RECORDS=int(os.getenv("PREDICTIVE_MIN_RECORDS", "8")),
+        PREDICTIVE_MIN_RECORDS=int(os.getenv("PREDICTIVE_MIN_RECORDS", "1")),
         SORTING_TELEMETRY_STALE_SECONDS=float(
             os.getenv("SORTING_TELEMETRY_STALE_SECONDS", "1")
         ),
@@ -88,6 +88,16 @@ def create_app(test_config: dict | None = None) -> Flask:
         SORTING_WARNING_THRESHOLD=int(
             os.getenv("SORTING_WARNING_THRESHOLD", "3")
         ),
+        DEFECT_UPLOAD_DIR=os.getenv(
+            "DEFECT_UPLOAD_DIR",
+            str(Path(app.root_path).parent / "uploads" / "defects"),
+        ),
+        DEFECT_DATASET_DIR=os.getenv(
+            "DEFECT_DATASET_DIR",
+            str(Path(app.root_path).parents[1] / "dataset"),
+        ),
+        DEFECT_REVIEW_COUNT=int(os.getenv("DEFECT_REVIEW_COUNT", "1")),
+        DEFECT_REJECT_COUNT=int(os.getenv("DEFECT_REJECT_COUNT", "3")),
     )
     if test_config:
         app.config.update(test_config)
@@ -99,10 +109,12 @@ def create_app(test_config: dict | None = None) -> Flask:
     from app.api.health import health_bp
     from app.api.sorting_live import sorting_live_bp
     from app.api.orientation_live import orientation_live_bp
+    from app.api.defect_detection import defect_bp
     app.register_blueprint(api_v1_bp, url_prefix="/api/v1")
     app.register_blueprint(health_bp, url_prefix="/api")
     app.register_blueprint(sorting_live_bp, url_prefix="/api/v1/sorting")
     app.register_blueprint(orientation_live_bp, url_prefix="/api/v1/orientation/live")
+    app.register_blueprint(defect_bp, url_prefix="/api")
 
     from app.services.live_orientation import LiveOrientationWorker
     from app.services.sorting_control import SortingControlService
