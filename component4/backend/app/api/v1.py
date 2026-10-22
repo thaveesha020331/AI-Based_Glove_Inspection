@@ -130,7 +130,7 @@ def predictive_risk_service():
         high_probability=float(current_app.config.get("RISK_HIGH_PROBABILITY", 0.66)),
         random_state=int(current_app.config.get("PREDICTIVE_RANDOM_STATE", 42)),
         n_estimators=int(current_app.config.get("PREDICTIVE_N_ESTIMATORS", 300)),
-        min_training_records=int(current_app.config.get("PREDICTIVE_MIN_RECORDS", 8)),
+        min_training_records=int(current_app.config.get("PREDICTIVE_MIN_RECORDS", 1)),
     ))
 
 
@@ -682,4 +682,25 @@ def import_csv():
 
 @api_v1_bp.get("/settings")
 def settings():
-    return response({"frontend_origin": current_app.config["FRONTEND_ORIGIN"], "max_upload_bytes": current_app.config["MAX_CONTENT_LENGTH"]})
+    dataset_root = Path(current_app.config["DEFECT_DATASET_DIR"])
+    model_path = Path(current_app.config["DEFECT_MODEL_PATH"])
+    try:
+        from ml.quality_detection.validate_coco import validate
+        dataset_status = validate(dataset_root) if dataset_root.is_dir() else {"valid": False}
+    except (OSError, ValueError, KeyError) as exc:
+        dataset_status = {"valid": False, "error": str(exc)}
+    try:
+        from app.services.defect_detection import DefectDetector
+        detector_status = DefectDetector(str(model_path)).status()
+    except (OSError, ValueError) as exc:
+        detector_status = {"ready": False, "error": str(exc)}
+    return response({
+        "frontend_origin": current_app.config["FRONTEND_ORIGIN"],
+        "max_upload_bytes": current_app.config["MAX_CONTENT_LENGTH"],
+        "database_engine": current_app.config["SQLALCHEMY_DATABASE_URI"].split(":", 1)[0],
+        "dataset_path": str(dataset_root),
+        "dataset_status": dataset_status,
+        "detector_status": detector_status,
+        "quality_proxy": "COCO annotation-based A/B/Reject; not a factory release grade",
+        "predictive_min_training_records": current_app.config["PREDICTIVE_MIN_RECORDS"],
+    })

@@ -142,6 +142,33 @@ class AuditLog(db.Model):
     __table_args__ = (Index("ix_audit_created_at", "created_at"),)
 
 
+class DefectImage(TimestampMixin, db.Model):
+    __tablename__ = "defect_images"
+    image_id = db.Column(db.String(64), primary_key=True)
+    batch_id = db.Column(db.String(64), db.ForeignKey("batches.batch_id"), nullable=False)
+    original_filename = db.Column(db.String(255), nullable=False)
+    stored_path = db.Column(db.String(500), nullable=False)
+    width = db.Column(db.Integer)
+    height = db.Column(db.Integer)
+    detection_count = db.Column(db.Integer, nullable=False, default=0)
+    analysis_json = db.Column(JSON, nullable=False, default=dict)
+    __table_args__ = (Index("ix_defect_images_batch", "batch_id"),)
+
+
+class DefectDetection(db.Model):
+    __tablename__ = "defect_detections"
+    id = db.Column(db.Integer, primary_key=True)
+    image_id = db.Column(db.String(64), db.ForeignKey("defect_images.image_id"), nullable=False)
+    category = db.Column(db.String(100), nullable=False)
+    confidence = db.Column(Numeric(8, 5), nullable=False)
+    x1 = db.Column(db.Float, nullable=False)
+    y1 = db.Column(db.Float, nullable=False)
+    x2 = db.Column(db.Float, nullable=False)
+    y2 = db.Column(db.Float, nullable=False)
+    area_zone = db.Column(db.String(30), nullable=False)
+    __table_args__ = (Index("ix_defect_detections_image", "image_id"),)
+
+
 def model_to_dict(model):
     result = {}
     for column in model.__table__.columns:
