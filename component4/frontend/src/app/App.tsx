@@ -3,6 +3,7 @@ import { AppShell } from "../layout/AppShell";
 import { OverviewPage } from "../features/overview/OverviewPage";
 import { SortingControlPage } from "../features/sorting/SortingControlPage";
 import { GloveOrientationPage } from "../features/orientation/GloveOrientationPage";
+import { LiveDefectDetectionPage } from "../features/defects/LiveDefectDetectionPage";
 import {
   AlertsPage, BatchesPage, DataManagementPage, DefectsPage, HistoryPage,
   PredictionsPage, ProductionPage, ReportsPage, SettingsPage,
@@ -16,6 +17,7 @@ export function App() {
         <Route path="/production" element={<ProductionPage />} />
         <Route path="/sorting-system" element={<SortingControlPage />} />
         <Route path="/live-orientation" element={<GloveOrientationPage />} />
+        <Route path="/live-defects" element={<LiveDefectDetectionPage />} />
         <Route path="/defects" element={<DefectsPage />} />
         <Route path="/batches" element={<BatchesPage />} />
         <Route path="/predictions" element={<PredictionsPage />} />

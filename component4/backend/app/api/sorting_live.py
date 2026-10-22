@@ -86,6 +86,21 @@ def control_status():
     return response(_control().snapshot())
 
 
+@sorting_live_bp.post("/speed-sync")
+def start_speed_sync():
+    denied = _local_control_denied()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or {}
+    try:
+        return response(
+            sorting_telemetry.arm_speed_sync(payload.get("distance_cm")),
+            202,
+        )
+    except ValueError as exc:
+        return jsonify({"error": {"code": "validation_error", "message": str(exc)}}), 400
+
+
 @sorting_live_bp.patch("/control")
 def configure_control():
     denied = _local_control_denied()
@@ -93,10 +108,17 @@ def configure_control():
         return denied
     payload = request.get_json(silent=True) or {}
     try:
-        return response(_control().configure(
+        control = _control()
+        previous_orientation = control.expected_orientation
+        data = control.configure(
             expected_orientation=payload.get("expected_orientation"),
             automatic_enabled=payload.get("automatic_enabled"),
-        ))
+        )
+        if data["expected_orientation"] != previous_orientation:
+            worker = current_app.extensions.get("live_orientation_worker")
+            if worker is not None:
+                worker.rearm_orientation_decision()
+        return response(data)
     except ValueError as exc:
         return jsonify({"error": {"code": "validation_error", "message": str(exc)}}), 400
 

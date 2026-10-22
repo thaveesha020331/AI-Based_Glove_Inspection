@@ -17,7 +17,10 @@ from app.models import (
 )
 from app.models.entities import model_to_dict
 from app.services.analytics import AnalyticsService, AnalyticsThresholds
-from app.services.predictive_risk import PredictiveRiskService, RiskConfig, build_batch_frame
+from app.services.predictive_risk import (
+    FEATURES, PredictiveRiskService, RiskConfig, build_batch_frame,
+    load_training_dataset,
+)
 from app.services.decision_support import DecisionSupportService
 from app.services.reports import ReportService
 
@@ -124,8 +127,6 @@ def predictive_risk_service():
         Path(current_app.root_path).parent.parent / "models"
     )
     return PredictiveRiskService(model_dir, RiskConfig(
-        rejection_threshold=float(current_app.config.get("QUALITY_REJECTION_THRESHOLD", 5.0)),
-        reject_grade_threshold=float(current_app.config.get("REJECT_GRADE_THRESHOLD", 5.0)),
         low_probability=float(current_app.config.get("RISK_LOW_PROBABILITY", 0.33)),
         high_probability=float(current_app.config.get("RISK_HIGH_PROBABILITY", 0.66)),
         random_state=int(current_app.config.get("PREDICTIVE_RANDOM_STATE", 42)),
@@ -140,6 +141,26 @@ def predictive_frame():
         QualityRecord.query.all(), SortingRecord.query.all(),
         predictive_risk_service().config,
     )
+
+
+def prediction_input_frame(payload):
+    """Validate production-time request fields and return one inference row."""
+    missing = [field for field in FEATURES if payload.get(field) is None]
+    if missing:
+        return None, error("Missing production-time prediction fields.", details={"fields": missing})
+    row = {field: payload[field] for field in FEATURES}
+    for field in FEATURES:
+        if field in ("production_line", "shift"):
+            if not isinstance(row[field], str) or not row[field].strip():
+                return None, error(f"{field} must be a non-empty string.", details={"field": field})
+        else:
+            try:
+                row[field] = float(row[field])
+            except (TypeError, ValueError):
+                return None, error(f"{field} must be numeric.", details={"field": field})
+            if not np.isfinite(row[field]) or row[field] < 0:
+                return None, error(f"{field} must be a finite non-negative number.", details={"field": field})
+    return pd.DataFrame([{"batch_id": payload["batch_id"], "production_timestamp": datetime.now(timezone.utc), **row}]), None
 
 
 @api_v1_bp.get("/health")
@@ -376,6 +397,90 @@ def predictions_status():
     return response(predictive_risk_service().status())
 
 
+@api_v1_bp.get("/predictions/dataset-batches")
+def predictions_dataset_batches():
+    try:
+        frame = load_training_dataset(current_app.config["PREDICTIVE_DATASET_PATH"])
+        rows = frame[[
+            "batch_id", "production_timestamp", "production_line", "shift",
+            "operator_experience_years", "machine_age_months", "temperature_c",
+            "humidity_pct", "production_quantity", "target",
+        ]].copy()
+        source = pd.read_csv(current_app.config["PREDICTIVE_DATASET_PATH"])
+        source["batch_id"] = source["batch_id"].astype(str)
+        rows = rows.merge(
+            source[[
+                "batch_id", "total_inspected", "total_rejected", "total_accepted",
+                "rejection_rate_pct", "acceptance_rate_pct", "quality_score_pct",
+            ]],
+            on="batch_id",
+            how="left",
+        )
+        return response([
+            {
+                "batch_id": str(row.batch_id),
+                "production_timestamp": row.production_timestamp.isoformat(),
+                "production_line": str(row.production_line),
+                "shift": str(row.shift),
+                "operator_experience_years": int(row.operator_experience_years),
+                "machine_age_months": int(row.machine_age_months),
+                "temperature_c": float(row.temperature_c),
+                "humidity_pct": float(row.humidity_pct),
+                "production_quantity": int(row.production_quantity),
+                "inspected_quantity": int(row.total_inspected),
+                "accepted_quantity": int(row.total_accepted),
+                "rejected_quantity": int(row.total_rejected),
+                "rejection_rate": float(row.rejection_rate_pct),
+                "acceptance_rate": float(row.acceptance_rate_pct),
+                "quality_score": float(row.quality_score_pct),
+                "quality_risk_label": str(row.target),
+                "current_quality_status": "Synthetic demonstration data",
+                "source": "synthetic demonstration CSV",
+            }
+            for row in rows.itertuples(index=False)
+        ])
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        current_app.logger.exception("Synthetic prediction dataset could not be read")
+        return error(str(exc), "dataset_error", 422)
+
+
+@api_v1_bp.get("/analytics/synthetic")
+def synthetic_analytics():
+    try:
+        frame = pd.read_csv(current_app.config["PREDICTIVE_DATASET_PATH"])
+        numeric = [
+            "total_produced", "total_inspected", "total_accepted", "total_rejected",
+            "pinhole_count", "tear_count", "contamination_count",
+            "discoloration_count", "dimensional_issue_count", "other_defect_count",
+            "rejection_rate_pct", "acceptance_rate_pct", "quality_score_pct",
+        ]
+        for field in numeric:
+            frame[field] = pd.to_numeric(frame[field], errors="coerce").fillna(0)
+        risk_distribution = frame["quality_risk_label"].value_counts().to_dict()
+        return response({
+            "source": "glove_batch_quality_synthetic_dataset.csv (synthetic demonstration data; not factory history)",
+            "batch_count": int(len(frame)),
+            "totals": {field: float(frame[field].sum()) for field in (
+                "total_produced", "total_inspected", "total_accepted", "total_rejected")},
+            "rates": {
+                "rejection_rate": round(float(frame.total_rejected.sum() / frame.total_inspected.sum() * 100), 4),
+                "acceptance_rate": round(float(frame.total_accepted.sum() / frame.total_inspected.sum() * 100), 4),
+            },
+            "risk_distribution": {str(key): int(value) for key, value in risk_distribution.items()},
+            "defects": {field.removesuffix("_count"): int(frame[field].sum()) for field in (
+                "pinhole_count", "tear_count", "contamination_count",
+                "discoloration_count", "dimensional_issue_count", "other_defect_count")},
+            "high_risk_batches": frame.loc[
+                frame.quality_risk_label.eq("High"),
+                ["batch_id", "production_line", "shift", "rejection_rate_pct", "quality_score_pct"],
+            ].head(20).to_dict(orient="records"),
+            "history": frame.sort_values("production_date", ascending=False).head(100).to_dict(orient="records"),
+        })
+    except (FileNotFoundError, OSError, KeyError, ValueError, ZeroDivisionError) as exc:
+        current_app.logger.exception("Synthetic analytics could not be calculated")
+        return error(str(exc), "dataset_error", 422)
+
+
 @api_v1_bp.get("/predictions/analytics")
 def predictions_analytics():
     query = PredictionRecord.query.order_by(PredictionRecord.prediction_time.desc())
@@ -394,7 +499,12 @@ def predictions_analytics():
 @api_v1_bp.post("/predictions/train")
 def predictions_train():
     service = predictive_risk_service()
-    result = service.train(predictive_frame())
+    try:
+        frame = load_training_dataset(current_app.config["PREDICTIVE_DATASET_PATH"])
+        result = service.train(frame)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        current_app.logger.exception("Predictive-risk training failed")
+        return error(str(exc), "training_error", 422)
     return response(result, 200 if result.get("trained") else 422)
 
 
@@ -404,15 +514,36 @@ def predictions_predict():
     batch_id = payload.get("batch_id")
     if not batch_id:
         return error("batch_id is required.", details={"fields": ["batch_id"]})
-    if not db.session.get(Batch, batch_id):
-        return error("Batch does not exist.", "not_found", 404)
-    result = predictive_risk_service().predict(batch_id, predictive_frame())
+    dataset_frame = None
+    try:
+        dataset_frame = load_training_dataset(current_app.config["PREDICTIVE_DATASET_PATH"])
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        current_app.logger.warning("Synthetic prediction dataset unavailable: %s", exc)
+    dataset_rows = dataset_frame[dataset_frame["batch_id"].astype(str) == str(batch_id)] if dataset_frame is not None else pd.DataFrame()
+    if not dataset_rows.empty:
+        frame = dataset_rows
+    elif any(field in payload for field in FEATURES):
+        frame, validation_error = prediction_input_frame(payload)
+        if validation_error:
+            return validation_error
+    else:
+        if not db.session.get(Batch, batch_id):
+            return error("Batch does not exist. Provide all production-time feature fields for a new batch.", "not_found", 404)
+        frame = predictive_frame()
+    result = predictive_risk_service().predict(batch_id, frame)
     if result.get("state") != "ready":
         return response(result, 200)
+    if not db.session.get(Batch, batch_id):
+        timestamp = parse_date(result["prediction_timestamp"], "prediction_timestamp")
+        metadata = {"source": "risk_prediction", "pre_inspection": True}
+        if not dataset_rows.empty:
+            metadata.update({"dataset": "glove_batch_quality_synthetic_dataset.csv", "synthetic": True})
+        get_or_create_batch(batch_id, timestamp, metadata)
     prediction = PredictionRecord(
         batch_id=batch_id,
         predicted_risk_category=result["risk_category"],
         predicted_probability=result["risk_probability"],
+        probability_scores=result["probability_scores"],
         model_version=result["model_version"] or "unknown",
         prediction_time=parse_date(result["prediction_timestamp"], "prediction_timestamp"),
         prediction_status="Completed",
@@ -437,6 +568,7 @@ def prediction_create():
     try:
         prediction = PredictionRecord(batch_id=payload["batch_id"], predicted_risk_category=payload["predicted_risk_category"],
                                       predicted_probability=payload.get("predicted_probability"), model_version=payload["model_version"],
+                                      probability_scores=payload.get("probability_scores", {}),
                                       prediction_time=parse_date(payload.get("prediction_time", datetime.now(timezone.utc).isoformat()), "prediction_time"),
                                       prediction_status=payload.get("prediction_status", "Completed"))
         if not db.session.get(Batch, payload["batch_id"]):
@@ -682,4 +814,45 @@ def import_csv():
 
 @api_v1_bp.get("/settings")
 def settings():
-    return response({"frontend_origin": current_app.config["FRONTEND_ORIGIN"], "max_upload_bytes": current_app.config["MAX_CONTENT_LENGTH"]})
+    dataset_root = Path(current_app.config["DEFECT_DATASET_DIR"])
+    model_path = Path(current_app.config["DEFECT_MODEL_PATH"])
+    predictive_service = predictive_risk_service()
+    predictive_dataset_path = Path(current_app.config["PREDICTIVE_DATASET_PATH"])
+    try:
+        predictive_frame = load_training_dataset(predictive_dataset_path)
+        predictive_dataset_status = {
+            "available": True,
+            "path": str(predictive_dataset_path),
+            "row_count": int(len(predictive_frame)),
+            "source": "Synthetic demonstration data; not factory data",
+        }
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        predictive_dataset_status = {
+            "available": False,
+            "path": str(predictive_dataset_path),
+            "error": str(exc),
+            "source": "Synthetic demonstration data; not factory data",
+        }
+    try:
+        from ml.quality_detection.validate_coco import validate
+        dataset_status = validate(dataset_root) if dataset_root.is_dir() else {"valid": False}
+    except (OSError, ValueError, KeyError) as exc:
+        dataset_status = {"valid": False, "error": str(exc)}
+    try:
+        from app.services.defect_detection import DefectDetector
+        detector_status = DefectDetector(str(model_path)).status()
+    except (OSError, ValueError) as exc:
+        detector_status = {"ready": False, "error": str(exc)}
+    return response({
+        "frontend_origin": current_app.config["FRONTEND_ORIGIN"],
+        "max_upload_bytes": current_app.config["MAX_CONTENT_LENGTH"],
+        "database_engine": current_app.config["SQLALCHEMY_DATABASE_URI"].split(":", 1)[0],
+        "dataset_path": str(dataset_root),
+        "dataset_status": dataset_status,
+        "detector_status": detector_status,
+        "predictive_dataset": predictive_dataset_status,
+        "predictive_model": predictive_service.status(),
+        "predictive_features": list(FEATURES),
+        "quality_proxy": "COCO annotation-based A/B/Reject; not a factory release grade",
+        "predictive_min_training_records": current_app.config["PREDICTIVE_MIN_RECORDS"],
+    })

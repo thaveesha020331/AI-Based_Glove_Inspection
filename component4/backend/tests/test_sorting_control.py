@@ -60,3 +60,38 @@ def test_camera_light_uses_relay_three_semantic_command(control):
 def test_empty_decision_is_rejected(control):
     with pytest.raises(ValueError):
         control.process_decision()
+
+
+def test_failed_orientation_command_is_retried_before_reporting_success():
+    attempts = []
+
+    def send(command):
+        attempts.append(command)
+        return len(attempts) >= 3
+
+    service = SortingControlService(
+        send,
+        expected_orientation="LeftHand",
+        command_attempts=3,
+        command_retry_delay=0,
+    )
+
+    result = service.process_decision(orientation="RightHand")
+
+    assert attempts == ["ORIENTATION_PULSE"] * 3
+    assert result["last_action"]["command_queued"] is True
+    assert result["total_rejected"] == 1
+
+
+def test_failed_command_is_not_counted_as_a_completed_reject():
+    service = SortingControlService(
+        lambda _command: False,
+        command_attempts=2,
+        command_retry_delay=0,
+    )
+
+    result = service.process_decision(orientation="RightHand")
+
+    assert result["last_action"]["command_queued"] is False
+    assert result["total_rejected"] == 0
+    assert result["consecutive_rejects"] == 0

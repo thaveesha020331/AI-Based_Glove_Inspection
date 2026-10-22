@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Activity, AlertTriangle, Cable, Clock3, Cpu, Lightbulb, Power,
-  Radio, RotateCcw, ShieldAlert, Siren, Wifi, WifiOff, Zap, type LucideIcon,
+  Activity, AlertTriangle, Cable, Clock3, Cpu, Gauge, Lightbulb, Power,
+  Radio, RotateCcw, ShieldAlert, Siren, Timer, Wifi, WifiOff, Zap, type LucideIcon,
 } from "lucide-react";
 import { apiMessage } from "../../services/api";
 import {
-  configureSortingControl, resetSortingWarning, setCameraLight,
-  subscribeSortingTelemetry, type SortingControl,
+  configureSortingControl, resetSortingWarning, setCameraLight, startSpeedSync,
+  subscribeSortingTelemetry, type SortingControl, type SpeedSync,
 } from "../../services/sortingTelemetry";
 
 type ConnectionState = "connecting" | "live" | "offline" | "error";
@@ -23,6 +23,12 @@ type SortingSnapshot = {
   driverError: string | null;
   sensors: Record<"s1" | "s2" | "v1" | "v2", boolean>;
   relays: Record<"relay1" | "relay2" | "relay3" | "relay4", boolean>;
+  speedSync: SpeedSync;
+};
+
+const emptySpeedSync: SpeedSync = {
+  state: "idle", distance_cm: 100, elapsed_ms: null, speed_mps: null,
+  speed_cmps: null, started_at: null, completed_at: null, error: null,
 };
 
 const emptySnapshot: SortingSnapshot = {
@@ -30,6 +36,7 @@ const emptySnapshot: SortingSnapshot = {
   timestamp: null, driverState: "not_started", driverPort: "COM7", driverError: null,
   sensors: { s1: false, s2: false, v1: false, v2: false },
   relays: { relay1: false, relay2: false, relay3: false, relay4: false },
+  speedSync: emptySpeedSync,
 };
 
 const emptyControl: SortingControl = {
@@ -61,6 +68,7 @@ function normalize(payload: unknown): { snapshot: SortingSnapshot; control: Sort
   const relays = record(data.relays);
   const driver = record(data.driver);
   const control = record(data.control);
+  const speedSync = record(data.speed_sync);
   const receivedAt = typeof data.received_at === "string" ? Date.parse(data.received_at) : NaN;
   return {
     snapshot: {
@@ -73,6 +81,17 @@ function normalize(payload: unknown): { snapshot: SortingSnapshot; control: Sort
       driverError: typeof driver.last_error === "string" ? driver.last_error : null,
       sensors: { s1: bool(sensors.speed_s1), s2: bool(sensors.speed_s2), v1: bool(sensors.verify_v1), v2: bool(sensors.verify_v2) },
       relays: { relay1: bool(relays.relay1), relay2: bool(relays.relay2), relay3: bool(relays.relay3), relay4: bool(relays.relay4) },
+      speedSync: {
+        state: ["idle", "waiting_s1", "waiting_s2", "complete", "error"].includes(String(speedSync.state))
+          ? String(speedSync.state) as SpeedSync["state"] : "idle",
+        distance_cm: num(speedSync.distance_cm, 100),
+        elapsed_ms: speedSync.elapsed_ms == null ? null : num(speedSync.elapsed_ms),
+        speed_mps: speedSync.speed_mps == null ? null : num(speedSync.speed_mps),
+        speed_cmps: speedSync.speed_cmps == null ? null : num(speedSync.speed_cmps),
+        started_at: typeof speedSync.started_at === "string" ? speedSync.started_at : null,
+        completed_at: typeof speedSync.completed_at === "string" ? speedSync.completed_at : null,
+        error: typeof speedSync.error === "string" ? speedSync.error : null,
+      },
     },
     control: Object.keys(control).length ? control as unknown as SortingControl : null,
   };
@@ -100,6 +119,7 @@ export function SortingControlPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [events, setEvents] = useState<string[]>([]);
+  const [sensorDistance, setSensorDistance] = useState("100");
 
   useEffect(() => subscribeSortingTelemetry((payload) => {
     const next = normalize(payload);
@@ -130,6 +150,20 @@ export function SortingControlPage() {
     finally { setBusy(false); }
   }
 
+  async function syncSpeed() {
+    const distance = Number(sensorDistance);
+    if (!Number.isFinite(distance) || distance <= 0) {
+      setMessage("Enter the measured S1 to S2 distance in centimetres.");
+      return;
+    }
+    setBusy(true); setMessage(null);
+    try {
+      await startSpeedSync(distance);
+      setEvents((previous) => [`${new Date().toLocaleTimeString()} - Speed sync armed (${distance} cm)`, ...previous].slice(0, 8));
+    } catch (error) { setMessage(apiMessage(error)); }
+    finally { setBusy(false); }
+  }
+
   const relayItems = [
     { key: "relay1" as const, name: "R1", description: "Damaged-glove reject", tone: "red" },
     { key: "relay2" as const, name: "R2", description: "Wrong-orientation reject", tone: "amber" },
@@ -137,6 +171,9 @@ export function SortingControlPage() {
     { key: "relay4" as const, name: "R4", description: "Warning light", tone: "red" },
   ];
   const lastAction = record(control.last_action);
+  const lastCommand = typeof lastAction.command === "string" ? lastAction.command : null;
+  const commandQueued = typeof lastAction.command_queued === "boolean" ? lastAction.command_queued : null;
+  const controlError = typeof control.last_error === "string" ? control.last_error : null;
 
   return <main className="page-grid min-h-[calc(100vh-76px)] p-4 sm:p-5 lg:p-8"><div className="mx-auto max-w-[1500px]">
     <div className="mb-7 flex flex-col justify-between gap-4 md:flex-row md:items-end"><div><p className="text-xs font-bold uppercase tracking-[.16em] text-brand">Component 3 - Automated relay control</p><h2 className="heading mt-2 text-2xl font-extrabold tracking-tight text-ink sm:text-[30px]">Sorting System</h2><p className="mt-1 text-sm text-muted">Automatic reject gates, camera lighting, warning logic and live ESP32 telemetry.</p></div><div className={`inline-flex items-center gap-2 self-start rounded-full px-3 py-2 text-xs font-extrabold ${connectionView.style}`}><ConnectionIcon size={15} />{connectionView.label}</div></div>
@@ -144,6 +181,8 @@ export function SortingControlPage() {
     {message && <div className="mb-5 flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-700"><AlertTriangle size={17} className="mt-0.5 shrink-0" /><div><p className="font-bold">Sorting control message</p><p className="mt-1">{message}</p></div></div>}
 
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Controller uptime" value={formatUptime(snapshot.uptimeMs)} detail={`${snapshot.driverPort} - ${snapshot.driverState}`} icon={Cpu} /><Metric label="Expected stream" value={control.expected_orientation === "LeftHand" ? "Left hand" : "Right hand"} detail="Opposite hand is rejected by R2" icon={Activity} /><Metric label="Consecutive rejects" value={`${control.consecutive_rejects} / ${control.warning_threshold}`} detail="R4 turns on at threshold" icon={ShieldAlert} /><Metric label="Last update" value={snapshot.timestamp ? new Date(snapshot.timestamp).toLocaleTimeString() : "-"} detail={snapshot.ageMs == null ? snapshot.status : `${snapshot.ageMs} ms old`} icon={Clock3} /></div>
+
+    <section className="surface-glow mt-5 rounded-2xl border border-line p-5 shadow-soft"><div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center"><div><div className="flex items-center gap-2"><Gauge size={18} className="text-brand" /><h3 className="heading text-sm font-bold text-ink">Conveyor speed synchronization</h3></div><p className="mt-1 text-xs text-muted">Times one glove from the S1 rising edge to the following S2 rising edge.</p></div><div className="flex flex-col gap-3 sm:flex-row sm:items-end"><label className="text-xs font-bold text-ink">S1 to S2 distance (cm)<input type="number" min="0.1" max="10000" step="0.1" value={sensorDistance} onChange={(event) => setSensorDistance(event.target.value)} className="mt-2 w-full rounded-xl border border-line bg-white px-3 py-2.5 text-sm sm:w-44" /></label><button disabled={busy || connection !== "live"} onClick={syncSpeed} className="focus-ring inline-flex items-center justify-center gap-2 rounded-xl bg-brand px-5 py-3 text-sm font-extrabold text-white hover:opacity-90 disabled:opacity-50"><Timer size={16} />Sync speed</button></div></div><div className="mt-5 grid gap-3 sm:grid-cols-3"><Metric label="Sync state" value={snapshot.speedSync.state === "waiting_s1" ? "Waiting for S1" : snapshot.speedSync.state === "waiting_s2" ? "Timing to S2" : snapshot.speedSync.state === "complete" ? "Complete" : snapshot.speedSync.state === "error" ? "Error" : "Idle"} detail={snapshot.speedSync.error ?? `${snapshot.speedSync.distance_cm.toFixed(1)} cm sensor distance`} icon={Activity} /><Metric label="Measured speed" value={snapshot.speedSync.speed_mps == null ? "-" : `${snapshot.speedSync.speed_mps.toFixed(3)} m/s`} detail={snapshot.speedSync.speed_cmps == null ? "Pass one glove through S1 then S2" : `${snapshot.speedSync.speed_cmps.toFixed(1)} cm/s`} icon={Gauge} /><Metric label="Travel time" value={snapshot.speedSync.elapsed_ms == null ? "-" : `${(snapshot.speedSync.elapsed_ms / 1000).toFixed(3)} s`} detail="ESP32 uptime difference" icon={Timer} /></div></section>
 
     <div className="mt-5 grid gap-5 xl:grid-cols-[1fr_1fr]">
       <section className="surface-glow rounded-2xl border border-line p-5 shadow-soft"><div className="flex items-start justify-between"><div><h3 className="heading text-sm font-bold text-ink">Automatic sorting setup</h3><p className="mt-1 text-xs text-muted">Choose the hand type that should continue on the main belt.</p></div><Zap size={18} className="text-brand" /></div><div className="mt-5 grid gap-4 sm:grid-cols-2"><label className="text-xs font-bold text-ink">Expected orientation<select disabled={busy} value={control.expected_orientation} onChange={(event) => runAction(() => configureSortingControl({ expected_orientation: event.target.value as "LeftHand" | "RightHand" }), `Expected stream set to ${event.target.value}`)} className="mt-2 w-full rounded-xl border border-line bg-white px-3 py-3 text-sm"><option value="LeftHand">Left hand</option><option value="RightHand">Right hand</option></select></label><div><p className="text-xs font-bold text-ink">Automatic decisions</p><button disabled={busy} onClick={() => runAction(() => configureSortingControl({ automatic_enabled: !control.automatic_enabled }), control.automatic_enabled ? "Automatic sorting disabled" : "Automatic sorting enabled")} className={`mt-2 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-extrabold text-white ${control.automatic_enabled ? "bg-emerald-600" : "bg-slate-500"}`}><Power size={16} />{control.automatic_enabled ? "Enabled" : "Disabled"}</button></div></div><div className="mt-4 rounded-xl bg-slate-50 p-4 text-xs text-muted">{control.expected_orientation === "LeftHand" ? "Right-hand" : "Left-hand"} detections pulse R2. Damaged-glove decisions pulse R1. Each pulse switches off automatically in the ESP32 firmware.</div></section>
@@ -156,6 +195,6 @@ export function SortingControlPage() {
       <section className="surface-glow rounded-2xl border border-line p-5 shadow-soft"><div className="flex items-start justify-between"><div><h3 className="heading text-sm font-bold text-ink">Relay outputs</h3><p className="mt-1 text-xs text-muted">Confirmed states reported by the controller.</p></div><Radio size={18} className="text-brand" /></div><div className="mt-4 grid gap-3 sm:grid-cols-2">{relayItems.map((item) => { const active = snapshot.relays[item.key]; return <div key={item.key} className={`rounded-xl border p-4 ${active ? "border-cyan-300 bg-cyan-50" : "border-line bg-white"}`}><div className="flex items-center justify-between"><div><p className="text-xs font-extrabold text-ink">{item.name}</p><p className="mt-1 text-[10px] text-muted">{item.description}</p></div><span className={`h-2.5 w-2.5 rounded-full ${active ? "animate-pulse bg-cyan-500" : "bg-slate-300"}`} /></div><p className={`mt-3 text-[10px] font-extrabold uppercase ${active ? "text-cyan-700" : "text-slate-400"}`}>{active ? "On" : "Off"}</p></div>; })}</div></section>
     </div>
 
-    <section className="surface-glow mt-5 rounded-2xl border border-line p-5 shadow-soft"><div className="flex items-center justify-between"><div><h3 className="heading text-sm font-bold text-ink">Decision activity</h3><p className="mt-1 text-xs text-muted">Automatic model decisions and controls from this browser session.</p></div><RotateCcw size={16} className="text-muted" /></div><div className="mt-4 rounded-xl bg-slate-50 p-4"><p className="text-xs font-bold text-ink">Latest system decision</p><p className="mt-1 text-xs text-muted">{lastAction.reason ? `${String(lastAction.reason).split("_").join(" ")} - ${String(lastAction.result)}` : "Waiting for the first glove decision"}</p></div>{events.length > 0 && <div className="mt-3 divide-y divide-slate-100">{events.map((event, index) => <p key={`${event}-${index}`} className="py-2 text-xs text-muted">{event}</p>)}</div>}</section>
+    <section className="surface-glow mt-5 rounded-2xl border border-line p-5 shadow-soft"><div className="flex items-center justify-between"><div><h3 className="heading text-sm font-bold text-ink">Decision activity</h3><p className="mt-1 text-xs text-muted">Automatic model decisions and controls from this browser session.</p></div><RotateCcw size={16} className="text-muted" /></div><div className="mt-4 rounded-xl bg-slate-50 p-4"><p className="text-xs font-bold text-ink">Latest system decision</p><p className="mt-1 text-xs text-muted">{lastAction.reason ? `${String(lastAction.reason).split("_").join(" ")} - ${String(lastAction.result)}` : "Waiting for the first glove decision"}</p>{lastCommand && <p className={`mt-2 text-xs font-bold ${commandQueued ? "text-emerald-700" : "text-red-700"}`}>{lastCommand}: {commandQueued ? "queued to COM7" : "delivery failed - retrying"}</p>}{controlError && <p className="mt-2 text-xs font-semibold text-red-700">{controlError}</p>}</div>{events.length > 0 && <div className="mt-3 divide-y divide-slate-100">{events.map((event, index) => <p key={`${event}-${index}`} className="py-2 text-xs text-muted">{event}</p>)}</div>}</section>
   </div></main>;
 }

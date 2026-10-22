@@ -12,13 +12,15 @@ from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
+import json
 
 PRODUCTION_COLUMNS = ("id", "batch_id", "production_timestamp", "production_quantity",
                       "inspected_quantity", "accepted_quantity", "rejected_quantity")
 INSPECTION_COLUMNS = ("record_id", "batch_id", "inspection_timestamp", "defect_category", "defect_status",
                       "anomaly_score", "confidence")
 QUALITY_COLUMNS = ("id", "batch_id", "glove_size", "colour", "orientation",
-                   "length_measurement", "quality_grade", "batch_consistency_status")
+                   "length_measurement", "quality_grade", "batch_consistency_status",
+                   "metadata_json")
 SORTING_COLUMNS = ("id", "batch_id", "sorting_timestamp", "status",
                    "intended_sorting_category", "actual_sorting_outcome")
 GRADES = ("A", "B", "C", "Reject")
@@ -34,7 +36,9 @@ class AnalyticsThresholds:
 
 def _records(rows: Iterable[Any], fields: tuple[str, ...]) -> pd.DataFrame:
     return pd.DataFrame(
-        [{field: getattr(row, field, None) for field in fields} for row in rows],
+        [{field: json.dumps(getattr(row, field, None), sort_keys=True)
+          if isinstance(getattr(row, field, None), dict) else getattr(row, field, None)
+          for field in fields} for row in rows],
         columns=list(fields),
     )
 

@@ -24,6 +24,23 @@ unset, which makes isolated tests and local prototyping possible.
 
 ## Migrations and demonstration data
 
+To populate the existing analytics pages with the real extracted COCO dataset,
+run this idempotent import from `component4\backend`:
+
+```powershell
+python -m flask db upgrade
+python -m scripts.import_coco_dataset --dataset ..\dataset
+```
+
+It creates three clearly marked audit batches (`DATASET-TRAIN`,
+`DATASET-VALID`, and `DATASET-TEST`) using the actual image and annotation
+counts. It also calculates a clearly labeled quality proxy from the annotations:
+images with no annotated defect are `A`, one or two annotations are `B`, and
+three or more are `Reject`; rejected quantity means images containing at least
+one COCO annotation. These are dataset-analysis rules, not factory release
+decisions or model predictions. Re-running the command refreshes these
+dataset-audit records without touching unrelated production data.
+
 Seeding is optional and inserts only clearly marked local demonstration records.
 Remove those records without touching other data with:
 
@@ -106,47 +123,114 @@ treated as valid analytics input. The service normalizes timestamps to UTC,
 trims categorical values, coerces numeric values only for validation, and
 returns warnings describing excluded or incomplete data.
 
-## Predictive quality-risk model
+## Batch quality-risk model
 
-The predictive module uses one row per batch and a
-`RandomForestClassifier(class_weight="balanced_subsample")`. A batch is labelled
-`high_risk` when its historical rejection rate is at least
-`QUALITY_REJECTION_THRESHOLD` (default 5%) or its Reject-grade share is at
-least `REJECT_GRADE_THRESHOLD` (default 5%). Rejected quantity and quality
-grade are label sources only and are excluded from model features. Training
-requires valid production timestamps, positive production and inspected
-quantities, at least two target classes, and both classes in chronological
-training and evaluation windows. The default minimum is eight eligible
-batches.
+`dataset\glove_batch_quality_synthetic_dataset.csv` is the initial **synthetic
+demonstration dataset**, not historical factory data. It contains 1,200 rows
+with the labels Low, Medium, and High (1,108 High, 87 Medium, 5 Low at the
+time of writing). Training reads this CSV and does not require copying it into
+the operational tables.
 
-Features include production quantity, inspection coverage, inspection event
-volume and category diversity, quality-record count and size/colour diversity,
-sorting workload/failure count, production line, and dominant size/colour.
-Sorting status and quality grade are not used as features. Training uses a
-chronological 75/25 batch split, not a shuffled split, to reduce temporal
-leakage. Evaluation reports accuracy, precision, recall, F1, confusion matrix,
-and ROC-AUC when both evaluation classes are present. It also reports a
-documented rule baseline based on low inspection coverage or elevated
-inspection-event rate.
+The leakage-safe `RandomForestClassifier` uses only information available
+before inspection: `production_line`, `shift`, `operator_experience_years`,
+`machine_age_months`, `temperature_c`, `humidity_pct`, and production
+quantity. Rejection counts/rates, acceptance, quality score, defect counts,
+and the target label are never model features. Numeric imputation and
+categorical one-hot encoding are persisted inside the Joblib pipeline.
+`class_weight="balanced_subsample"` handles the severe class imbalance.
+Training uses a stratified 75/25 split when class counts permit it and reports
+the actual holdout accuracy, weighted precision, weighted recall, weighted F1,
+and Low/Medium/High confusion matrix. Metrics from synthetic data are
+demonstration results and do not establish real-world accuracy.
 
-The model is persisted as Joblib plus JSON metadata in `component4/models`
-(configurable with `PREDICTIVE_MODEL_DIR`). Run:
+The model and JSON evaluation metadata are persisted in `component4\models`
+(configurable with `PREDICTIVE_MODEL_DIR`). Configure the input file with
+`PREDICTIVE_DATASET_PATH` when importing a replacement dataset with the same
+schema. Run:
 
 ```powershell
 python -m flask --app run.py db upgrade
 curl -X POST http://127.0.0.1:5000/api/v1/predictions/train
 curl http://127.0.0.1:5000/api/v1/predictions/status
 curl -X POST http://127.0.0.1:5000/api/v1/predictions/predict `
-  -H "Content-Type: application/json" -d '{"batch_id":"B-2026-001"}'
+  -H "Content-Type: application/json" `
+  -d '{"batch_id":"B-2026-001","production_line":"Line-A","shift":"Morning","operator_experience_years":5,"machine_age_months":20,"temperature_c":25.0,"humidity_pct":65.0,"production_quantity":2000}'
 ```
 
-Risk categories use configurable model probability thresholds:
-Low `< 0.33`, Medium `0.33–0.65`, and High `>= 0.66`. A prediction is an
-estimate, not a guarantee of future defects. The API explicitly returns
-`untrained`, `insufficient_data`, `unavailable`, or `failed` states instead of
-inventing probabilities or evaluation results.
+`GET /api/v1/predictions/status` returns model readiness and measured
+evaluation results. `POST /api/v1/predictions/predict` validates all
+production-time fields and returns `risk_category`, `risk_probability`, and
+`probability_scores` for all classes. For an existing database batch, the API
+can derive production-time values from its records and metadata; a new batch
+may submit the fields in the example and is stored with a pre-inspection
+marker. Missing, non-numeric, negative, and non-finite values return clear
+validation errors. Every stored result includes batch ID, timestamp, model
+version, predicted risk, and probability scores.
 
 ## Hand-image dataset boundary
+
+## Glove defect detection (Component 4)
+
+The extracted dataset is at `component4\dataset\` and is not moved or modified.
+The verified COCO splits are: train 62 images/79 boxes, valid 17/18, and test
+9/9. Every referenced image exists, dimensions match the JSON, and all boxes
+are positive and inside image bounds. Source category IDs 0 and 3 both carry
+the generic name `defect-Detection`; the conversion preserves those IDs as
+`Other defect`, while IDs 1 and 2 remain `Pinhole` and `Tear`.
+
+Run these exact PowerShell commands from `component4\backend`:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r ml\quality_detection\requirements.txt
+python -m ml.quality_detection.validate_coco --dataset ..\dataset
+python -m ml.quality_detection.train --dataset ..\dataset --epochs 30
+```
+
+Training copies images and generated YOLO labels into
+`backend\ml\quality_detection\yolo_dataset`; original dataset files are never
+overwritten. The script validates on the held-out `test` split and prints the
+Ultralytics evaluation output. Copy the reported `best.pt` to
+`backend\models\glove_defect_model.pt` (or set `DEFECT_MODEL_PATH`).
+
+Detection endpoints are `/api/health`, `/api/predict`, `/api/batches`,
+`/api/batches/<batch_id>/images`, `/api/batches/<batch_id>/summary`, and
+`/api/analytics/overview`. Dataset and model readiness are available at
+`/api/dataset` and `/api/training/status`. Batch analysis uses normalized image zones and
+explicitly does not claim finger/palm/wrist localization because the COCO
+annotations contain no anatomical region labels. For a presentation without
+the optional YOLO runtime, use `GET /api/dataset/preview?split=test` through
+the backend API. This is a clearly labeled COCO ground-truth audit of the
+supplied images, not model inference, and therefore has no confidence score.
+The supplied images consistently place the cuff on the left, palm in the
+middle, and fingers on the right. The API therefore reports broad
+`wrist/cuff`, `palm`, and `finger region` counts using an image-coordinate
+heuristic. It cannot identify an individual finger or claim that the model
+learned anatomical regions.
+
+Start the API with `python -m flask --app run.py db upgrade` followed by
+`python -m flask --app run.py run --debug`. If Ultralytics/model weights are
+not installed, prediction returns HTTP 503 with the exact remediation rather
+than fabricated results.
+
+Check detector readiness with `GET /api/model/status` or `GET /api/health`.
+`weights_available` only means the checkpoint file exists; `ready` means both
+the checkpoint and the PyTorch/Ultralytics runtime are usable. The current
+Python 3.15 environment cannot install the pinned PyTorch detector dependency,
+so use Python 3.12-3.14 for real YOLO inference/training:
+
+```powershell
+py -3.13 -m venv .venv-yolo
+.\.venv-yolo\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pip install -r ml\quality_detection\requirements.txt
+```
+
+Batch quality is an image-based decision rule, separate from the detector:
+`ACCEPT` means 0 observed detections, `REVIEW` means 1-2, and `REJECT` means
+3 or more. Configure `DEFECT_REVIEW_COUNT` and `DEFECT_REJECT_COUNT` for a
+demonstration-specific threshold. These are not industry-certified release
+criteria, and no detection does not prove that a glove is defect-free.
 
 The Google Drive hand-image dataset is not bundled with this repository. The
 workspace audit found no project image files outside Python and frontend
@@ -300,13 +384,20 @@ npm run build
 The build performs the TypeScript check and creates the Vite production bundle.
 No separate lint script is configured in the existing package.
 
-## Live glove orientation
+## Live glove inspection
 
 The Live Orientation dashboard starts the backend webcam only when the user
-selects **Start model**. It loads the included MobileNet V2 TorchScript file,
-classifies each frame as `LeftHand` or `RightHand`, and sends a smoothed result
-plus an annotated MJPEG preview to the browser. This model identifies hand
-orientation; it does not classify glove defects or product quality.
+selects **Start model**. It loads the included MobileNet V2 TorchScript file for
+`LeftHand`/`RightHand` classification and the Ultralytics YOLO checkpoint for
+`defect-Detection`, `Pinhole`, and `Tear`. Both models share one webcam stream.
+The browser receives smoothed orientation and defect results plus an annotated
+MJPEG preview. A stable defect takes priority and sends `DEFECT_PULSE`; otherwise
+the configured orientation rule determines whether `ORIENTATION_PULSE` is sent.
+
+Only one vision model is loaded at a time. Starting the Live Orientation page
+loads MobileNet only; starting the Live Defect Detection page stops the previous
+mode and loads YOLO only. This avoids making every camera frame wait for both
+CPU models.
 
 Install the backend dependencies and start both applications:
 
@@ -323,10 +414,18 @@ npm run dev
 Open `http://localhost:5173/live-orientation`. Optional settings in `.env` are
 `ORIENTATION_CAMERA_INDEX`, `ORIENTATION_MIN_CONFIDENCE`,
 `ORIENTATION_SMOOTHING_WINDOW`, `ORIENTATION_CLEAR_AFTER_FRAMES`, and
-`ORIENTATION_MODEL_PATH`. Low-confidence frames clear the previous stable result
+`ORIENTATION_MODEL_PATH`. Manual exposure is enabled by default with
+`CAMERA_AUTO_EXPOSURE=false`, `CAMERA_EXPOSURE=-2`, and `CAMERA_GAIN=0` to avoid
+washed-out inspection images. Set `CAMERA_AUTO_EXPOSURE=true` if automatic
+exposure is preferred. The dashboard control changes the webcam's hardware
+exposure directly within this camera's tested `-7` to
+`-2` range; no software exposure filter is applied. Defect settings are `DEFECT_MODEL_PATH`,
+`DEFECT_MIN_CONFIDENCE`, `DEFECT_IMAGE_SIZE`, and `DEFECT_INFERENCE_INTERVAL`.
+Running YOLO every second frame by default reduces CPU latency. Low-confidence frames clear the previous stable result
 and are displayed as `No glove / uncertain`. The default model
 is `ml/quality_detection/weight/mobilenet_v2_classifier.torchscript.pt` and the
-default webcam index is `0`.
+default defect model is `ml/defect_detection/weight/best.pt`. The default webcam
+index is `0`.
 
 On Windows, start the backend with the repository interpreter to avoid loading
 a partially installed Microsoft Store copy of Torch:

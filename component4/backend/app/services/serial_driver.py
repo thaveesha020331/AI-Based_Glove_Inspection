@@ -4,6 +4,7 @@ import atexit
 import importlib.util
 from pathlib import Path
 from threading import Lock, Thread
+import time
 
 from app.services.sorting_live import sorting_telemetry
 
@@ -54,15 +55,19 @@ class SerialDriverManager:
                 "last_error": getattr(self._driver, "last_error", None),
             }
 
-    def send_command(self, command):
+    def send_command(self, command, connection_timeout=0.6):
         self.ensure_started()
-        with self._lock:
-            driver = self._driver
+        deadline = time.monotonic() + max(float(connection_timeout), 0.0)
+        driver = None
+        while time.monotonic() <= deadline:
+            with self._lock:
+                driver = self._driver
+            if driver is not None and driver.state == "connected":
+                return driver.send_command(command)
+            time.sleep(0.02)
         if driver is None:
             raise RuntimeError("Serial driver is not available.")
-        if driver.state != "connected":
-            raise RuntimeError("ESP32 serial connection is not ready.")
-        return driver.send_command(command)
+        raise RuntimeError("ESP32 serial connection is not ready.")
 
     def stop(self):
         with self._lock:

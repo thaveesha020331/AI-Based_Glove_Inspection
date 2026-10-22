@@ -70,14 +70,60 @@ def test_csv_duplicate_rows_are_rejected_before_insert(client):
     assert client.get("/api/v1/data-management/summary").get_json()["data"]["production_records"] == 0
 
 
-def test_predictive_api_reports_untrained_and_insufficient_states(client, tmp_path):
+def test_predictive_api_reports_untrained_and_trains_from_synthetic_dataset(client, tmp_path):
     client.application.config["PREDICTIVE_MODEL_DIR"] = str(tmp_path)
     status = client.get("/api/v1/predictions/status")
     assert status.status_code == 200
     assert status.get_json()["data"]["state"] == "untrained"
     training = client.post("/api/v1/predictions/train")
-    assert training.status_code == 422
-    assert training.get_json()["data"]["state"] == "insufficient_data"
+    assert training.status_code == 200
+    assert training.get_json()["data"]["state"] == "ready"
+    assert training.get_json()["data"]["dataset"].endswith("glove_batch_quality_synthetic_dataset.csv (synthetic demonstration data; not factory data)")
+
+
+def test_synthetic_prediction_validates_inputs_and_is_deterministic(client, tmp_path):
+    client.application.config.update({
+        "PREDICTIVE_MODEL_DIR": str(tmp_path),
+        "PREDICTIVE_N_ESTIMATORS": 10,
+    })
+    trained = client.post("/api/v1/predictions/train")
+    assert trained.status_code == 200
+    payload = {
+        "batch_id": "API-BATCH-1",
+        "production_line": "Line-A",
+        "shift": "Morning",
+        "operator_experience_years": 5,
+        "machine_age_months": 20,
+        "temperature_c": 25.0,
+        "humidity_pct": 65.0,
+        "production_quantity": 2000,
+    }
+    first = client.post("/api/v1/predictions/predict", json=payload)
+    second = client.post("/api/v1/predictions/predict", json=payload)
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.get_json()["data"]["risk_category"] == second.get_json()["data"]["risk_category"]
+    assert first.get_json()["data"]["probability_scores"] == second.get_json()["data"]["probability_scores"]
+    assert client.post("/api/v1/predictions/predict", json={
+        "batch_id": "API-BATCH-2",
+        **{key: value for key, value in payload.items() if key != "humidity_pct"},
+    }).status_code == 400
+    invalid = {**payload, "batch_id": "API-BATCH-3", "temperature_c": -1}
+    assert client.post("/api/v1/predictions/predict", json=invalid).status_code == 400
+
+
+def test_synthetic_csv_batch_can_be_selected_and_predicted_by_id(client, tmp_path):
+    client.application.config.update({
+        "PREDICTIVE_MODEL_DIR": str(tmp_path),
+        "PREDICTIVE_N_ESTIMATORS": 10,
+    })
+    assert client.post("/api/v1/predictions/train").status_code == 200
+    batches = client.get("/api/v1/predictions/dataset-batches")
+    assert batches.status_code == 200
+    assert batches.get_json()["data"][0]["source"] == "synthetic demonstration CSV"
+    result = client.post("/api/v1/predictions/predict", json={"batch_id": "BATCH-0001"})
+    assert result.status_code == 201
+    assert result.get_json()["data"]["features_used"]["production_quantity"] > 0
 
 
 def test_alert_filters_and_status_update(client):

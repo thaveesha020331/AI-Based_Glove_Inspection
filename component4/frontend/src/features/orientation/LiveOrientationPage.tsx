@@ -10,12 +10,18 @@ import {
 } from "../../services/liveOrientation";
 
 const initialSnapshot: OrientationSnapshot = {
-  state: "stopped", running: false, error: null, camera_index: 0,
+  state: "stopped", mode: null, running: false, error: null, camera_index: 0,
+  camera_auto_exposure: false, camera_auto_exposure_supported: null,
+  camera_exposure: -2, camera_gain: 0, camera_manual_exposure_supported: null,
+  camera_actual_exposure: null, camera_actual_gain: null,
   model: "mobilenet_v2_classifier.torchscript.pt", classes: ["LeftHand", "RightHand"],
   raw_prediction: null, raw_confidence: null, stable_prediction: null,
   stable_confidence: null, probabilities: { LeftHand: 0, RightHand: 0 },
   fps: 0, inference_ms: null, frame_count: 0, stability_window: 7,
   minimum_confidence: 0.65,
+  defect_model: "best.pt", defect_minimum_confidence: 0.30,
+  defective: false, defect_category: null, defect_confidence: null,
+  defect_detections: [], defect_inference_ms: null, defect_ready: false,
 };
 
 function percent(value: number | null | undefined): string {
