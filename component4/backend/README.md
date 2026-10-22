@@ -123,53 +123,49 @@ treated as valid analytics input. The service normalizes timestamps to UTC,
 trims categorical values, coerces numeric values only for validation, and
 returns warnings describing excluded or incomplete data.
 
-## Predictive quality-risk model
+## Batch quality-risk model
 
-The predictive module uses one row per batch and a
-`RandomForestClassifier(class_weight="balanced_subsample")`. A batch is labelled
-`high_risk` when its historical rejection rate is at least
-`QUALITY_REJECTION_THRESHOLD` (default 5%) or its Reject-grade share is at
-least `REJECT_GRADE_THRESHOLD` (default 5%). Rejected quantity and quality
-grade are label sources only and are excluded from model features. Training
-requires valid production timestamps, positive production and inspected
-quantities, at least two target classes, and both classes in chronological
-training and evaluation windows. The default minimum is one eligible
-batches.
+`dataset\glove_batch_quality_synthetic_dataset.csv` is the initial **synthetic
+demonstration dataset**, not historical factory data. It contains 1,200 rows
+with the labels Low, Medium, and High (1,108 High, 87 Medium, 5 Low at the
+time of writing). Training reads this CSV and does not require copying it into
+the operational tables.
 
-Features include production quantity, inspection coverage, inspection event
-volume and category diversity, quality-record count and size/colour diversity,
-sorting workload/failure count, production line, and dominant size/colour.
-Sorting status and quality grade are not used as features. Training uses a
-chronological 75/25 batch split, not a shuffled split, to reduce temporal
-leakage. Evaluation reports accuracy, precision, recall, F1, confusion matrix,
-and ROC-AUC when both evaluation classes are present. It also reports a
-documented rule baseline based on low inspection coverage or elevated
-inspection-event rate.
+The leakage-safe `RandomForestClassifier` uses only information available
+before inspection: `production_line`, `shift`, `operator_experience_years`,
+`machine_age_months`, `temperature_c`, `humidity_pct`, and production
+quantity. Rejection counts/rates, acceptance, quality score, defect counts,
+and the target label are never model features. Numeric imputation and
+categorical one-hot encoding are persisted inside the Joblib pipeline.
+`class_weight="balanced_subsample"` handles the severe class imbalance.
+Training uses a stratified 75/25 split when class counts permit it and reports
+the actual holdout accuracy, weighted precision, weighted recall, weighted F1,
+and Low/Medium/High confusion matrix. Metrics from synthetic data are
+demonstration results and do not establish real-world accuracy.
 
-The model is persisted as Joblib plus JSON metadata in `component4/models`
-(configurable with `PREDICTIVE_MODEL_DIR`). Run:
+The model and JSON evaluation metadata are persisted in `component4\models`
+(configurable with `PREDICTIVE_MODEL_DIR`). Configure the input file with
+`PREDICTIVE_DATASET_PATH` when importing a replacement dataset with the same
+schema. Run:
 
 ```powershell
 python -m flask --app run.py db upgrade
 curl -X POST http://127.0.0.1:5000/api/v1/predictions/train
 curl http://127.0.0.1:5000/api/v1/predictions/status
 curl -X POST http://127.0.0.1:5000/api/v1/predictions/predict `
-  -H "Content-Type: application/json" -d '{"batch_id":"B-2026-001"}'
+  -H "Content-Type: application/json" `
+  -d '{"batch_id":"B-2026-001","production_line":"Line-A","shift":"Morning","operator_experience_years":5,"machine_age_months":20,"temperature_c":25.0,"humidity_pct":65.0,"production_quantity":2000}'
 ```
 
-Risk categories use configurable model probability thresholds:
-Low `< 0.33`, Medium `0.33–0.65`, and High `>= 0.66`. A prediction is an
-estimate, not a guarantee of future defects. The API explicitly returns
-`untrained`, `insufficient_data`, `unavailable`, or `failed` states instead of
-inventing probabilities or evaluation results.
-
-For a small dataset-only presentation, `PREDICTIVE_MIN_RECORDS=1` permits the
-Train model action to fit a real one-class baseline from the available
-persisted batches. If the existing batches contain only the low-risk target
-class, the saved model returns a low-risk probability of 0 and explicitly marks
-holdout evaluation metrics as unavailable. This is a trained demonstration
-artifact, not a validated risk model; genuine accuracy/F1 requires historical
-batches containing both target classes.
+`GET /api/v1/predictions/status` returns model readiness and measured
+evaluation results. `POST /api/v1/predictions/predict` validates all
+production-time fields and returns `risk_category`, `risk_probability`, and
+`probability_scores` for all classes. For an existing database batch, the API
+can derive production-time values from its records and metadata; a new batch
+may submit the fields in the example and is stored with a pre-inspection
+marker. Missing, non-numeric, negative, and non-finite values return clear
+validation errors. Every stored result includes batch ID, timestamp, model
+version, predicted risk, and probability scores.
 
 ## Hand-image dataset boundary
 
