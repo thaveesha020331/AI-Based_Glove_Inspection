@@ -24,6 +24,23 @@ unset, which makes isolated tests and local prototyping possible.
 
 ## Migrations and demonstration data
 
+To populate the existing analytics pages with the real extracted COCO dataset,
+run this idempotent import from `component4\backend`:
+
+```powershell
+python -m flask db upgrade
+python -m scripts.import_coco_dataset --dataset ..\dataset
+```
+
+It creates three clearly marked audit batches (`DATASET-TRAIN`,
+`DATASET-VALID`, and `DATASET-TEST`) using the actual image and annotation
+counts. It also calculates a clearly labeled quality proxy from the annotations:
+images with no annotated defect are `A`, one or two annotations are `B`, and
+three or more are `Reject`; rejected quantity means images containing at least
+one COCO annotation. These are dataset-analysis rules, not factory release
+decisions or model predictions. Re-running the command refreshes these
+dataset-audit records without touching unrelated production data.
+
 Seeding is optional and inserts only clearly marked local demonstration records.
 Remove those records without touching other data with:
 
@@ -116,7 +133,7 @@ least `REJECT_GRADE_THRESHOLD` (default 5%). Rejected quantity and quality
 grade are label sources only and are excluded from model features. Training
 requires valid production timestamps, positive production and inspected
 quantities, at least two target classes, and both classes in chronological
-training and evaluation windows. The default minimum is eight eligible
+training and evaluation windows. The default minimum is one eligible
 batches.
 
 Features include production quantity, inspection coverage, inspection event
@@ -146,6 +163,14 @@ estimate, not a guarantee of future defects. The API explicitly returns
 `untrained`, `insufficient_data`, `unavailable`, or `failed` states instead of
 inventing probabilities or evaluation results.
 
+For a small dataset-only presentation, `PREDICTIVE_MIN_RECORDS=1` permits the
+Train model action to fit a real one-class baseline from the available
+persisted batches. If the existing batches contain only the low-risk target
+class, the saved model returns a low-risk probability of 0 and explicitly marks
+holdout evaluation metrics as unavailable. This is a trained demonstration
+artifact, not a validated risk model; genuine accuracy/F1 requires historical
+batches containing both target classes.
+
 ## Hand-image dataset boundary
 
 ## Glove defect detection (Component 4)
@@ -174,14 +199,42 @@ Ultralytics evaluation output. Copy the reported `best.pt` to
 
 Detection endpoints are `/api/health`, `/api/predict`, `/api/batches`,
 `/api/batches/<batch_id>/images`, `/api/batches/<batch_id>/summary`, and
-`/api/analytics/overview`. Batch analysis uses normalized image zones and
+`/api/analytics/overview`. Dataset and model readiness are available at
+`/api/dataset` and `/api/training/status`. Batch analysis uses normalized image zones and
 explicitly does not claim finger/palm/wrist localization because the COCO
-annotations contain no anatomical region labels.
+annotations contain no anatomical region labels. For a presentation without
+the optional YOLO runtime, use `GET /api/dataset/preview?split=test` through
+the backend API. This is a clearly labeled COCO ground-truth audit of the
+supplied images, not model inference, and therefore has no confidence score.
+The supplied images consistently place the cuff on the left, palm in the
+middle, and fingers on the right. The API therefore reports broad
+`wrist/cuff`, `palm`, and `finger region` counts using an image-coordinate
+heuristic. It cannot identify an individual finger or claim that the model
+learned anatomical regions.
 
 Start the API with `python -m flask --app run.py db upgrade` followed by
 `python -m flask --app run.py run --debug`. If Ultralytics/model weights are
 not installed, prediction returns HTTP 503 with the exact remediation rather
 than fabricated results.
+
+Check detector readiness with `GET /api/model/status` or `GET /api/health`.
+`weights_available` only means the checkpoint file exists; `ready` means both
+the checkpoint and the PyTorch/Ultralytics runtime are usable. The current
+Python 3.15 environment cannot install the pinned PyTorch detector dependency,
+so use Python 3.12-3.14 for real YOLO inference/training:
+
+```powershell
+py -3.13 -m venv .venv-yolo
+.\.venv-yolo\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pip install -r ml\quality_detection\requirements.txt
+```
+
+Batch quality is an image-based decision rule, separate from the detector:
+`ACCEPT` means 0 observed detections, `REVIEW` means 1-2, and `REJECT` means
+3 or more. Configure `DEFECT_REVIEW_COUNT` and `DEFECT_REJECT_COUNT` for a
+demonstration-specific threshold. These are not industry-certified release
+criteria, and no detection does not prove that a glove is defect-free.
 
 The Google Drive hand-image dataset is not bundled with this repository. The
 workspace audit found no project image files outside Python and frontend
