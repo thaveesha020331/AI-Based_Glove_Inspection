@@ -5,13 +5,18 @@ export const api = axios.create({
   timeout: 15000,
   headers: { "Content-Type": "application/json" },
 });
+export const defectApiBaseUrl = import.meta.env.VITE_DEFECT_API_BASE_URL
+  || (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:5000/api/v1").replace(/\/api\/v1\/?$/, "/api");
 
 export function apiMessage(error: unknown): string {
   if (error instanceof AxiosError) {
     if (!error.response) {
       return "The Flask API is unavailable. Start the backend and retry.";
     }
-    return error.response.data?.error?.message || "The API request failed.";
+    return error.response.data?.error?.message
+      || error.response.data?.data?.message
+      || error.response.data?.message
+      || "The API request failed.";
   }
   return error instanceof Error ? error.message : "The request failed.";
 }

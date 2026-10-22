@@ -35,6 +35,7 @@ export type OrientationSnapshot = {
     category: string;
     confidence: number;
     box: number[];
+    area_zone?: string;
   }>;
   defect_inference_ms: number | null;
   defect_ready: boolean;
