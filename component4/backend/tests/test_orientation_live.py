@@ -11,6 +11,7 @@ class FakeOrientationWorker:
         self.state = "stopped"
         self.mode = None
         self.exposure = -2
+        self.decision_generation = 0
 
     def snapshot(self):
         return {
@@ -40,6 +41,10 @@ class FakeOrientationWorker:
             raise ValueError("exposure must be between -7 and -2.")
         self.exposure = exposure
         return self.snapshot()
+
+    def rearm_orientation_decision(self):
+        self.decision_generation += 1
+        return self.decision_generation
 
     def wait_for_update(self, _version, timeout=1.0):
         return self.snapshot(), 1
@@ -129,6 +134,18 @@ def test_camera_exposure_can_be_adjusted(client):
     assert updated.get_json()["data"]["camera_exposure"] == -3
     assert invalid.status_code == 400
     assert invalid.get_json()["error"]["code"] == "invalid_camera_setting"
+
+
+def test_expected_orientation_change_rearms_decision_window(client):
+    worker = client.application.extensions["live_orientation_worker"]
+
+    result = client.patch(
+        "/api/v1/sorting/control",
+        json={"expected_orientation": "RightHand"},
+    )
+
+    assert result.status_code == 200
+    assert worker.decision_generation == 1
 
 
 def test_worker_reports_uncertain_after_analysis_without_stable_result(tmp_path):

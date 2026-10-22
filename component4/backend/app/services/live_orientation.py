@@ -77,6 +77,16 @@ class LiveOrientationWorker:
         self._manual_exposure_supported = None
         self._actual_exposure = None
         self._actual_gain = None
+        self._decision_generation = 0
+        self._reset_stability_requested = False
+
+    def rearm_orientation_decision(self):
+        """Reset the stable decision after the expected hand is changed."""
+        with self._lock:
+            self._decision_generation += 1
+            self._reset_stability_requested = True
+            self._publish_locked()
+            return self._decision_generation
 
     def start(self, mode="orientation"):
         if mode not in {"orientation", "defect"}:
@@ -199,7 +209,17 @@ class LiveOrientationWorker:
                 "defect_inference_ms": self._defect_inference_ms,
                 "defect_ready": self._defect_ready,
                 "decision_state": self._decision_state_locked(),
+                "decision_generation": self._decision_generation,
             }
+
+    @staticmethod
+    def _notification_succeeded(result):
+        if not isinstance(result, dict):
+            return True
+        action = result.get("last_action")
+        if not isinstance(action, dict):
+            return True
+        return bool(action.get("command_queued", True))
 
     def _decision_state_locked(self):
         if self._state != "running":
@@ -311,6 +331,8 @@ class LiveOrientationWorker:
             ema = None
             stable_index = None
             last_notified_index = None
+            handled_decision_generation = -1
+            notification_retry_at = 0.0
             inspection_notified = False
             defect_notified = False
             uncertain_streak = 0
@@ -333,8 +355,21 @@ class LiveOrientationWorker:
                 raw_name = None
                 stable_name = None
                 notify_prediction = None
+                notify_prediction_index = None
+                notify_decision_generation = None
 
                 if model is not None:
+                    with self._lock:
+                        decision_generation = self._decision_generation
+                        reset_stability = self._reset_stability_requested
+                        if reset_stability:
+                            self._reset_stability_requested = False
+                    if reset_stability:
+                        history.clear()
+                        ema = None
+                        stable_index = None
+                        last_notified_index = None
+                        uncertain_streak = 0
                     started = time.perf_counter()
                     tensor = self._preprocess(frame, cv2, np, torch)
                     with torch.inference_mode():
@@ -359,14 +394,20 @@ class LiveOrientationWorker:
                         if uncertain_streak >= self.clear_after_frames:
                             stable_index = None
 
+                    decision_rearmed = (
+                        decision_generation != handled_decision_generation
+                    )
                     if stable_index is None:
                         last_notified_index = None
-                    elif stable_index != last_notified_index:
-                        last_notified_index = stable_index
+                    elif (
+                        stable_index != last_notified_index or decision_rearmed
+                    ) and time.monotonic() >= notification_retry_at:
                         notify_prediction = (
                             self.classes[stable_index],
                             round(float(ema[stable_index]), 4),
                         )
+                        notify_prediction_index = stable_index
+                        notify_decision_generation = decision_generation
                     raw_name = self.classes[raw_index]
                     stable_name = (
                         self.classes[stable_index]
@@ -499,10 +540,16 @@ class LiveOrientationWorker:
                     self._publish_locked()
                 if notify_prediction and self.on_stable_prediction:
                     try:
-                        self.on_stable_prediction(*notify_prediction)
+                        result = self.on_stable_prediction(*notify_prediction)
+                        if self._notification_succeeded(result):
+                            last_notified_index = notify_prediction_index
+                            handled_decision_generation = notify_decision_generation
+                            notification_retry_at = 0.0
+                        else:
+                            notification_retry_at = time.monotonic() + 0.25
                     except Exception:
                         # Relay-control failures must not stop camera inference.
-                        pass
+                        notification_retry_at = time.monotonic() + 0.25
                 if notify_defect and self.on_stable_defect:
                     try:
                         self.on_stable_defect(*notify_defect)

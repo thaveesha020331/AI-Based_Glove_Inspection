@@ -80,8 +80,14 @@ class SerialTelemetryDriver:
                 command = self.command_queue.get_nowait()
             except Empty:
                 return
-            serial_connection.write(f"{command}\n".encode("ascii"))
-            serial_connection.flush()
+            try:
+                serial_connection.write(f"{command}\n".encode("ascii"))
+                serial_connection.flush()
+            except (serial.SerialException, OSError):
+                # Preserve the command across a transient disconnect instead of
+                # silently losing the glove's sorting action.
+                self.command_queue.put_nowait(command)
+                raise
 
     def stop(self):
         self.stop_event.set()

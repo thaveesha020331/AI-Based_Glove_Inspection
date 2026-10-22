@@ -108,10 +108,17 @@ def configure_control():
         return denied
     payload = request.get_json(silent=True) or {}
     try:
-        return response(_control().configure(
+        control = _control()
+        previous_orientation = control.expected_orientation
+        data = control.configure(
             expected_orientation=payload.get("expected_orientation"),
             automatic_enabled=payload.get("automatic_enabled"),
-        ))
+        )
+        if data["expected_orientation"] != previous_orientation:
+            worker = current_app.extensions.get("live_orientation_worker")
+            if worker is not None:
+                worker.rearm_orientation_decision()
+        return response(data)
     except ValueError as exc:
         return jsonify({"error": {"code": "validation_error", "message": str(exc)}}), 400
 

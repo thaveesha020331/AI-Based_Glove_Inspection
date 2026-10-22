@@ -2,17 +2,27 @@
 
 from datetime import datetime, timezone
 from threading import RLock
+import time
 
 
 ORIENTATIONS = {"LeftHand", "RightHand"}
 
 
 class SortingControlService:
-    def __init__(self, command_sender, expected_orientation="LeftHand", warning_threshold=3):
+    def __init__(
+        self,
+        command_sender,
+        expected_orientation="LeftHand",
+        warning_threshold=3,
+        command_attempts=3,
+        command_retry_delay=0.04,
+    ):
         self._command_sender = command_sender
         self._lock = RLock()
         self.expected_orientation = self._normalize_orientation(expected_orientation)
         self.warning_threshold = max(int(warning_threshold), 1)
+        self.command_attempts = max(int(command_attempts), 1)
+        self.command_retry_delay = max(float(command_retry_delay), 0.0)
         self.automatic_enabled = True
         self.camera_light_requested = False
         self.warning_active = False
@@ -37,15 +47,19 @@ class SortingControlService:
         return result
 
     def _send(self, command):
-        try:
-            accepted = bool(self._command_sender(command))
-            if not accepted:
-                raise RuntimeError("Serial command was not accepted.")
-            self.last_error = None
-            return True
-        except (RuntimeError, ValueError, OSError) as error:
-            self.last_error = str(error)
-            return False
+        last_error = "Serial command was not accepted."
+        for attempt in range(self.command_attempts):
+            try:
+                if bool(self._command_sender(command)):
+                    self.last_error = None
+                    return True
+                last_error = "Serial command was not accepted."
+            except (RuntimeError, ValueError, OSError) as error:
+                last_error = str(error)
+            if attempt + 1 < self.command_attempts and self.command_retry_delay:
+                time.sleep(self.command_retry_delay)
+        self.last_error = last_error
+        return False
 
     def snapshot(self):
         with self._lock:
@@ -129,11 +143,12 @@ class SortingControlService:
             command_queued = True
             if command:
                 command_queued = self._send(command)
-                self.consecutive_rejects += 1
-                self.total_rejected += 1
-                if self.consecutive_rejects >= self.warning_threshold and not self.warning_active:
-                    if self._send("WARNING_ON"):
-                        self.warning_active = True
+                if command_queued:
+                    self.consecutive_rejects += 1
+                    self.total_rejected += 1
+                    if self.consecutive_rejects >= self.warning_threshold and not self.warning_active:
+                        if self._send("WARNING_ON"):
+                            self.warning_active = True
             else:
                 self.consecutive_rejects = 0
 
