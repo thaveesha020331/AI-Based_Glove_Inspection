@@ -58,6 +58,9 @@ class DefectDetector:
                         "category": str(result.names.get(class_index, class_index)),
                         "confidence": round(float(confidence), 4),
                         "box": [round(float(value), 1) for value in coordinates],
+                        "area_zone": anatomical_region(
+                            coordinates, result.orig_shape[1], result.orig_shape[0]
+                        ),
                     }
                 )
         detections.sort(key=lambda item: item["confidence"], reverse=True)
@@ -83,6 +86,20 @@ def main():
     ).predict(str(args.image))
     prediction.pop("annotated_frame", None)
     print(json.dumps(prediction, indent=2))
+
+
+def anatomical_region(box, width, height):
+    center_x = ((box[0] + box[2]) / 2) / max(width, 1)
+    if width / max(height, 1) < 1.3:
+        center_y = ((box[1] + box[3]) / 2) / max(height, 1)
+        vertical = "top" if center_y < 1 / 3 else "bottom" if center_y >= 2 / 3 else "middle"
+        horizontal = "left" if center_x < 1 / 3 else "right" if center_x >= 2 / 3 else "center"
+        return f"{vertical}-{horizontal}"
+    if center_x < 0.28:
+        return "wrist/cuff"
+    if center_x < 0.62:
+        return "palm"
+    return "finger region"
 
 
 if __name__ == "__main__":
