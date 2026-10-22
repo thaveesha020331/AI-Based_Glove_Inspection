@@ -1,19 +1,8 @@
-"""Batch-level predictive quality-risk modelling.
+"""Leakage-safe batch quality-risk modelling.
 
-Target definition
------------------
-Each eligible batch is one training row. ``high_risk`` is true when the
-historical rejected/inspected rate is at least ``rejection_threshold`` or the
-share of quality records graded ``Reject`` is at least
-``reject_grade_threshold``.  Rejected quantity and quality grade are target
-sources only; they are deliberately absent from model features.
-
-Features describe information available when a prediction is requested:
-production quantity and coverage, observed inspection event volume/category
-diversity, batch size/colour mix, and sorting workload.  Sorting status,
-rejected quantity, accepted quantity, and quality grades are not features.
-Rows without a valid batch id, production timestamp, positive production
-quantity, or positive inspected quantity are not eligible for training.
+The supplied CSV is synthetic demonstration data.  Only production-time
+features are used by the model; inspection outcomes and quality measurements
+are never model inputs.
 """
 
 from __future__ import annotations
@@ -30,35 +19,33 @@ import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import (accuracy_score, confusion_matrix, f1_score,
-                             precision_score, recall_score, roc_auc_score)
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 
 NUMERIC_FEATURES = (
-    "production_quantity", "inspected_quantity", "inspection_coverage",
-    "inspection_event_count", "defect_category_count", "quality_record_count",
-    "size_category_count", "colour_category_count", "sorting_record_count",
-    "sorting_failure_count", "sorting_success_rate",
+    "operator_experience_years",
+    "machine_age_months",
+    "temperature_c",
+    "humidity_pct",
+    "production_quantity",
 )
-CATEGORICAL_FEATURES = ("production_line", "dominant_size", "dominant_colour")
+CATEGORICAL_FEATURES = ("production_line", "shift")
 FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
+RISK_LABELS = ("Low", "Medium", "High")
 MODEL_FILENAME = "predictive_quality_risk.joblib"
 METADATA_FILENAME = "predictive_quality_risk.json"
 
 
 @dataclass(frozen=True)
 class RiskConfig:
-    rejection_threshold: float = 5.0
-    reject_grade_threshold: float = 5.0
-    baseline_coverage_threshold: float = 90.0
-    baseline_defect_rate_threshold: float = 5.0
     low_probability: float = 0.33
     high_probability: float = 0.66
     random_state: int = 42
     n_estimators: int = 300
-    min_training_records: int = 1
+    min_training_records: int = 8
 
 
 def _rows(rows: Iterable[Any], fields: tuple[str, ...]) -> pd.DataFrame:
@@ -68,11 +55,6 @@ def _rows(rows: Iterable[Any], fields: tuple[str, ...]) -> pd.DataFrame:
     )
 
 
-def _mode(frame: pd.DataFrame, field: str) -> str | None:
-    values = frame[field].dropna().astype(str).str.strip()
-    return values.mode().iloc[0] if not values.empty and not values.mode().empty else None
-
-
 def _metric(value: Any) -> float | None:
     if value is None or pd.isna(value):
         return None
@@ -80,115 +62,78 @@ def _metric(value: Any) -> float | None:
 
 
 def _classification_metrics(y_true: pd.Series, y_pred: np.ndarray,
-                            probabilities: np.ndarray | None = None,
-                            classes: np.ndarray | None = None) -> dict[str, Any]:
-    matrix = confusion_matrix(y_true, y_pred, labels=[False, True])
-    result: dict[str, Any] = {
+                            labels: tuple[Any, ...] | None = None) -> dict[str, Any]:
+    labels = labels or tuple(sorted(set(y_true) | set(y_pred)))
+    matrix = confusion_matrix(y_true, y_pred, labels=list(labels))
+    average = "binary" if set(labels) == {False, True} else "weighted"
+    metric_kwargs = {"average": average, "zero_division": 0}
+    if average == "binary":
+        metric_kwargs.pop("average")
+    return {
         "sample_size": int(len(y_true)),
-        "positive_count": int(y_true.sum()),
         "accuracy": _metric(accuracy_score(y_true, y_pred)),
-        "precision": _metric(precision_score(y_true, y_pred, zero_division=0)),
-        "recall": _metric(recall_score(y_true, y_pred, zero_division=0)),
-        "f1": _metric(f1_score(y_true, y_pred, zero_division=0)),
+        "precision": _metric(precision_score(y_true, y_pred, **metric_kwargs)),
+        "recall": _metric(recall_score(y_true, y_pred, **metric_kwargs)),
+        "f1": _metric(f1_score(y_true, y_pred, **metric_kwargs)),
+        "labels": list(labels),
         "confusion_matrix": matrix.tolist(),
+        "roc_auc": None,
     }
-    if probabilities is not None and classes is not None and len(np.unique(y_true)) == 2:
-        positive_index = list(classes).index(True) if True in classes else None
-        if positive_index is not None:
-            result["roc_auc"] = _metric(roc_auc_score(y_true, probabilities[:, positive_index]))
-        else:
-            result["roc_auc"] = None
-    else:
-        result["roc_auc"] = None
-    return result
+
+
+def load_training_dataset(dataset_path: str | Path) -> pd.DataFrame:
+    """Load and validate the synthetic demonstration training CSV."""
+    path = Path(dataset_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Training dataset was not found: {path}")
+    frame = pd.read_csv(path)
+    required = {"batch_id", "production_date", *FEATURES, "quality_risk_label"} - {"production_quantity"}
+    required.add("total_produced")
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"Training dataset is missing required columns: {', '.join(missing)}")
+    frame = frame.copy()
+    frame["production_quantity"] = frame["total_produced"]
+    frame["production_timestamp"] = pd.to_datetime(frame["production_date"], errors="coerce", utc=True)
+    for field in NUMERIC_FEATURES:
+        frame[field] = pd.to_numeric(frame[field], errors="coerce")
+    frame["quality_risk_label"] = frame["quality_risk_label"].astype("string").str.strip()
+    invalid = frame["quality_risk_label"].isna() | ~frame["quality_risk_label"].isin(RISK_LABELS)
+    if invalid.any() or frame[list(FEATURES)].isna().all(axis=1).any():
+        raise ValueError("Training dataset contains missing or invalid production-time values.")
+    return frame[["batch_id", "production_timestamp", *FEATURES, "quality_risk_label"]].rename(
+        columns={"quality_risk_label": "target"}
+    )
 
 
 def build_batch_frame(production_rows: Iterable[Any], batch_rows: Iterable[Any],
-                      inspection_rows: Iterable[Any], quality_rows: Iterable[Any],
-                      sorting_rows: Iterable[Any], config: RiskConfig | None = None) -> pd.DataFrame:
-    """Aggregate persisted source rows into one leakage-controlled row per batch."""
-    config = config or RiskConfig()
-    production = _rows(production_rows, (
-        "batch_id", "production_timestamp", "production_quantity",
-        "inspected_quantity", "rejected_quantity",
-    ))
+                      inspection_rows: Iterable[Any] = (), quality_rows: Iterable[Any] = (),
+                      sorting_rows: Iterable[Any] = (), config: RiskConfig | None = None) -> pd.DataFrame:
+    """Build a compatibility frame from existing records without outcome features."""
+    del inspection_rows, quality_rows, sorting_rows, config
+    production = _rows(production_rows, ("batch_id", "production_timestamp", "production_quantity",
+                                         "inspected_quantity", "rejected_quantity"))
     batches = _rows(batch_rows, ("batch_id", "production_line"))
-    inspections = _rows(inspection_rows, ("batch_id", "defect_category"))
-    quality = _rows(quality_rows, ("batch_id", "glove_size", "colour", "quality_grade"))
-    sorting = _rows(sorting_rows, ("batch_id", "status"))
     if production.empty:
-        return pd.DataFrame(columns=["batch_id", "production_timestamp", *FEATURES,
-                                     "target", "target_reason"])
-
+        return pd.DataFrame(columns=["batch_id", "production_timestamp", *FEATURES, "target"])
+    production["production_timestamp"] = pd.to_datetime(production["production_timestamp"], errors="coerce", utc=True)
     for field in ("production_quantity", "inspected_quantity", "rejected_quantity"):
         production[field] = pd.to_numeric(production[field], errors="coerce")
-    production["production_timestamp"] = pd.to_datetime(
-        production["production_timestamp"], errors="coerce", utc=True)
-    production = production.dropna(subset=["batch_id", "production_timestamp"])
-    production = production[production.production_quantity > 0]
-    grouped = production.groupby("batch_id", as_index=False).agg(
+    grouped = production.dropna(subset=["batch_id", "production_timestamp"])
+    grouped = grouped[grouped["production_quantity"] > 0].groupby("batch_id", as_index=False).agg(
+        production_timestamp=("production_timestamp", "min"),
         production_quantity=("production_quantity", "sum"),
         inspected_quantity=("inspected_quantity", "sum"),
         rejected_quantity=("rejected_quantity", "sum"),
-        production_timestamp=("production_timestamp", "min"),
     )
-    grouped["inspection_coverage"] = grouped.inspected_quantity / grouped.production_quantity * 100
-
-    def counts(source: pd.DataFrame, field: str, prefix: str) -> pd.DataFrame:
-        if source.empty:
-            return pd.DataFrame(columns=["batch_id", prefix])
-        source[field] = source[field].astype("string").str.strip()
-        return source.groupby("batch_id")[field].agg(
-            **{prefix: "count"}).reset_index()
-
-    grouped = grouped.merge(counts(inspections, "defect_category", "inspection_event_count"),
-                            on="batch_id", how="left")
-    grouped["defect_category_count"] = inspections.dropna(subset=["batch_id"]).groupby(
-        "batch_id")["defect_category"].nunique().reindex(grouped.batch_id).fillna(0).to_numpy() if not inspections.empty else 0
-    grouped = grouped.merge(counts(quality, "glove_size", "quality_record_count"),
-                            on="batch_id", how="left")
-    if not quality.empty:
-        size_counts = quality.groupby("batch_id")["glove_size"].nunique()
-        colour_counts = quality.groupby("batch_id")["colour"].nunique()
-        grouped["size_category_count"] = grouped.batch_id.map(size_counts).fillna(0)
-        grouped["colour_category_count"] = grouped.batch_id.map(colour_counts).fillna(0)
-        grouped["dominant_size"] = grouped.batch_id.map(
-            quality.groupby("batch_id").apply(lambda frame: _mode(frame, "glove_size"),
-                                              include_groups=False))
-        grouped["dominant_colour"] = grouped.batch_id.map(
-            quality.groupby("batch_id").apply(lambda frame: _mode(frame, "colour"),
-                                              include_groups=False))
-        reject_counts = quality.assign(is_reject=quality.quality_grade.astype("string").str.casefold().eq("reject")).groupby("batch_id").is_reject.mean()
-        grouped["reject_grade_share"] = grouped.batch_id.map(reject_counts).fillna(0) * 100
-    else:
-        grouped["size_category_count"] = 0
-        grouped["colour_category_count"] = 0
-        grouped["dominant_size"] = None
-        grouped["dominant_colour"] = None
-        grouped["reject_grade_share"] = 0
-    if not sorting.empty:
-        sorting["status"] = sorting.status.astype("string").str.casefold()
-        sort_counts = sorting.groupby("batch_id").size()
-        failures = sorting.assign(is_failure=sorting.status.eq("failure")).groupby("batch_id").is_failure.sum()
-        grouped["sorting_record_count"] = grouped.batch_id.map(sort_counts).fillna(0)
-        grouped["sorting_failure_count"] = grouped.batch_id.map(failures).fillna(0)
-    else:
-        grouped["sorting_record_count"] = 0
-        grouped["sorting_failure_count"] = 0
-    grouped["sorting_success_rate"] = np.where(
-        grouped.sorting_record_count > 0,
-        (grouped.sorting_record_count - grouped.sorting_failure_count) /
-        grouped.sorting_record_count * 100, np.nan)
     grouped = grouped.merge(batches.drop_duplicates("batch_id"), on="batch_id", how="left")
-    grouped["target"] = (
-        (grouped.rejected_quantity / grouped.inspected_quantity * 100 >= config.rejection_threshold)
-        | (grouped.reject_grade_share >= config.reject_grade_threshold)
-    )
-    grouped["target_reason"] = np.select(
-        [grouped.rejected_quantity / grouped.inspected_quantity * 100 >= config.rejection_threshold,
-         grouped.reject_grade_share >= config.reject_grade_threshold],
-        ["rejection_rate_threshold", "reject_grade_share_threshold"], default="below_threshold")
-    return grouped[["batch_id", "production_timestamp", *FEATURES, "target", "target_reason"]]
+    grouped["target"] = (grouped["rejected_quantity"] / grouped["inspected_quantity"] * 100 >= 5).fillna(False)
+    grouped["operator_experience_years"] = np.nan
+    grouped["machine_age_months"] = np.nan
+    grouped["temperature_c"] = np.nan
+    grouped["humidity_pct"] = np.nan
+    grouped["shift"] = "Unknown"
+    return grouped[["batch_id", "production_timestamp", *FEATURES, "target"]]
 
 
 class PredictiveRiskService:
@@ -203,29 +148,29 @@ class PredictiveRiskService:
             return {"trained": False, "state": "untrained",
                     "message": "No trained predictive-risk model artifact is available."}
         try:
-            metadata = json.loads(self.metadata_path.read_text(encoding="utf-8"))
-            return {"trained": True, "state": "ready", **metadata}
+            return {"trained": True, "state": "ready",
+                    **json.loads(self.metadata_path.read_text(encoding="utf-8"))}
         except (OSError, json.JSONDecodeError) as exc:
             return {"trained": False, "state": "failed",
                     "message": f"Model metadata cannot be read: {exc}"}
 
     def train(self, frame: pd.DataFrame) -> dict[str, Any]:
-        eligible = frame.dropna(subset=["production_timestamp", "target"]).copy()
-        eligible = eligible[eligible.inspected_quantity > 0].sort_values("production_timestamp")
+        eligible = frame.dropna(subset=["target"]).copy()
+        eligible = eligible[eligible[list(FEATURES)].notna().any(axis=1)]
         if len(eligible) < max(1, self.config.min_training_records):
             return {"state": "insufficient_data", "trained": False,
-                    "message": f"At least {max(1, self.config.min_training_records)} eligible batch is required.",
+                    "message": f"At least {max(1, self.config.min_training_records)} eligible batches are required.",
                     "training_record_count": int(len(eligible))}
-        split = max(1, int(len(eligible) * 0.75))
-        train, test = eligible.iloc[:split], eligible.iloc[split:]
-        evaluation_available = (
-            not test.empty
-            and train.target.nunique() >= 2
-            and test.target.nunique() >= 2
-        )
-        if not evaluation_available:
-            train = eligible
-            test = eligible.iloc[0:0]
+        target = eligible["target"]
+        is_legacy_binary = target.dtype == bool or set(target.unique()).issubset({True, False})
+        labels = (False, True) if is_legacy_binary else RISK_LABELS
+        stratify = target if target.value_counts().min() >= 2 else None
+        if len(eligible) >= 20:
+            train, test = train_test_split(eligible, test_size=0.25, random_state=self.config.random_state,
+                                            stratify=stratify)
+        else:
+            split = max(1, int(len(eligible) * 0.75))
+            train, test = eligible.iloc[:split], eligible.iloc[split:]
         preprocess = ColumnTransformer([
             ("numeric", Pipeline([("imputer", SimpleImputer(strategy="median"))]), list(NUMERIC_FEATURES)),
             ("categorical", Pipeline([
@@ -233,51 +178,43 @@ class PredictiveRiskService:
                 ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
             ]), list(CATEGORICAL_FEATURES)),
         ])
-        classifier = RandomForestClassifier(
-            n_estimators=self.config.n_estimators, random_state=self.config.random_state,
-            class_weight="balanced_subsample", n_jobs=-1,
-        )
-        pipeline = Pipeline([("preprocess", preprocess), ("classifier", classifier)])
-        pipeline.fit(train[list(FEATURES)], train.target.astype(bool))
-        train_predicted = pipeline.predict(train[list(FEATURES)])
-        train_probabilities = pipeline.predict_proba(train[list(FEATURES)])
-        train_classes = pipeline.named_steps["classifier"].classes_
-        training_metrics = _classification_metrics(
-            train.target.astype(bool), train_predicted,
-            train_probabilities, train_classes,
-        )
-        if evaluation_available:
-            predicted = pipeline.predict(test[list(FEATURES)])
-            probabilities = pipeline.predict_proba(test[list(FEATURES)])
-            classes = pipeline.named_steps["classifier"].classes_
-            model_metrics = _classification_metrics(test.target.astype(bool), predicted, probabilities, classes)
-            baseline_pred = (
-                (test.inspection_coverage < self.config.baseline_coverage_threshold)
-                | ((test.inspection_event_count / test.inspected_quantity * 100)
-                   >= self.config.baseline_defect_rate_threshold)
-            )
-            baseline_metrics = _classification_metrics(test.target.astype(bool), baseline_pred.to_numpy())
-        else:
-            model_metrics = {
-                "sample_size": 0,
-                "message": "Holdout evaluation unavailable: existing batches do not contain both target classes in a chronological holdout.",
-                "training_metrics": training_metrics,
-            }
-            baseline_metrics = {"sample_size": 0, "message": "Evaluation unavailable: existing batches do not contain both target classes in a chronological holdout."}
+        pipeline = Pipeline([
+            ("preprocess", preprocess),
+            ("classifier", RandomForestClassifier(
+                n_estimators=self.config.n_estimators, random_state=self.config.random_state,
+                class_weight="balanced_subsample", n_jobs=-1,
+            )),
+        ])
+        pipeline.fit(train[list(FEATURES)], train["target"])
+        training_metrics = _classification_metrics(train["target"], pipeline.predict(train[list(FEATURES)]), labels)
+        evaluation_available = not test.empty and test["target"].nunique() >= 2
+        evaluation = _classification_metrics(test["target"], pipeline.predict(test[list(FEATURES)]), labels) if evaluation_available else {
+            "sample_size": 0,
+            "message": "Holdout evaluation is unavailable because the test partition does not contain at least two classes.",
+            "labels": list(labels),
+        }
+        evaluation["rule_baseline"] = {
+            "sample_size": int(len(test)),
+            "message": "No separate rule baseline is defined for production-time-only features.",
+            "accuracy": None,
+        }
+        baseline_metrics = evaluation.pop("rule_baseline")
         version = "rf-risk-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         metadata = {
-            "model_version": version, "trained_at": datetime.now(timezone.utc).isoformat(),
-            "training_record_count": int(len(train)), "evaluation_record_count": int(len(test)),
+            "model_version": version,
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "training_record_count": int(len(train)),
+            "evaluation_record_count": int(len(test) if evaluation_available else 0),
             "feature_columns": list(FEATURES),
-            "label_definition": "high_risk when rejection rate or Reject-grade share meets configured threshold",
-            "thresholds": {"rejection_rate": self.config.rejection_threshold,
-                           "reject_grade_share": self.config.reject_grade_threshold,
-                           "low_probability": self.config.low_probability,
-                           "high_probability": self.config.high_probability},
-            "evaluation": {"conditions": "chronological 75/25 batch split when both classes are available; otherwise full-data baseline model with no evaluation metrics",
-                           "random_state": self.config.random_state,
-                           "model": model_metrics, "training_metrics": training_metrics,
-                           "rule_baseline": baseline_metrics},
+            "label_definition": "quality_risk_label from the synthetic demonstration dataset",
+            "dataset": "glove_batch_quality_synthetic_dataset.csv (synthetic demonstration data; not factory data)",
+            "evaluation": {
+                "split": "stratified random 75/25 split when class counts permit it; otherwise chronological 75/25 split",
+                "random_state": self.config.random_state,
+                "model": evaluation,
+                "rule_baseline": baseline_metrics,
+                "training_metrics": training_metrics,
+            },
         }
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         joblib.dump(pipeline, self.artifact_path)
@@ -287,47 +224,51 @@ class PredictiveRiskService:
     def predict(self, batch_id: str, frame: pd.DataFrame) -> dict[str, Any]:
         if not self.artifact_path.exists():
             return {"state": "unavailable", "message": "The model is untrained; train it before requesting predictions."}
-        rows = frame[frame.batch_id.astype(str) == str(batch_id)]
+        rows = frame[frame["batch_id"].astype(str) == str(batch_id)]
         if rows.empty:
-            return {"state": "unavailable", "message": f"No eligible feature data exists for batch {batch_id}."}
+            return {"state": "unavailable", "message": f"No eligible production-time feature data exists for batch {batch_id}."}
         try:
             pipeline = joblib.load(self.artifact_path)
             row = rows.iloc[[0]]
             probabilities = pipeline.predict_proba(row[list(FEATURES)])[0]
-            classes = pipeline.named_steps["classifier"].classes_
-            high_index = list(classes).index(True) if True in classes else None
-            probability = float(probabilities[high_index]) if high_index is not None else 0.0
-            if high_index is None and len(classes) == 1 and bool(classes[0]) is False:
-                category = "Low"
-            elif probability >= self.config.high_probability:
-                category = "High"
-            elif probability >= self.config.low_probability:
-                category = "Medium"
+            classes = list(pipeline.named_steps["classifier"].classes_)
+            scores = {str(label): round(float(probabilities[index]), 6) for index, label in enumerate(classes)}
+            predicted = str(pipeline.predict(row[list(FEATURES)])[0])
+            if set(classes) == {False, True}:
+                high_probability = scores.get("True", 0.0)
+                category = "High" if high_probability >= self.config.high_probability else (
+                    "Medium" if high_probability >= self.config.low_probability else "Low")
+                scores = {"Low": round(1 - high_probability, 6), "Medium": 0.0, "High": round(high_probability, 6)}
             else:
-                category = "Low"
-            importances = pipeline.named_steps["classifier"].feature_importances_
-            transformed_names = pipeline.named_steps["preprocess"].get_feature_names_out()
-            top = sorted(zip(transformed_names, importances), key=lambda item: item[1], reverse=True)[:5]
+                category = predicted
+                high_probability = scores.get("High", 0.0)
+            features_used = {}
+            for field in FEATURES:
+                value = row.iloc[0][field]
+                if pd.isna(value):
+                    features_used[field] = None
+                elif isinstance(value, np.generic):
+                    features_used[field] = value.item()
+                else:
+                    features_used[field] = value
             return {
                 "state": "ready", "batch_id": batch_id, "risk_category": category,
-                "risk_probability": _metric(probability),
-                "prediction_timestamp": datetime.now(timezone.utc).isoformat(),
+                "risk_probability": round(float(high_probability), 6),
+                "probability_scores": scores,
                 "model_version": self.status().get("model_version"),
-                "contributing_features": [{"feature": name, "importance": _metric(value)}
-                                           for name, value in top],
-                "observed_indicators": {field: _metric(row.iloc[0][field]) if field in NUMERIC_FEATURES
-                                        else row.iloc[0][field] for field in FEATURES
-                                        if pd.notna(row.iloc[0][field])},
+                "prediction_timestamp": datetime.now(timezone.utc).isoformat(),
+                "features_used": features_used,
+                "contributing_features": [{"feature": field, "importance": None} for field in FEATURES],
                 "recommended_action": self._recommendation(category),
-                "disclaimer": "This risk score is a model estimate, not a guarantee of future defects.",
+                "disclaimer": "This is a model estimate based on production-time features, not a guarantee of future defects.",
             }
-        except (OSError, ValueError, KeyError, AttributeError) as exc:
-            return {"state": "failed", "message": f"Prediction failed: {exc}"}
+        except (OSError, ValueError, KeyError) as exc:
+            return {"state": "failed", "message": f"Prediction could not be generated: {exc}"}
 
     @staticmethod
     def _recommendation(category: str) -> str:
         return {
-            "High": "Hold the batch for quality review and inspect dominant contributing indicators.",
-            "Medium": "Increase sampling and review the batch before release.",
-            "Low": "Continue routine inspection and monitor subsequent observations.",
-        }.get(category, "Collect sufficient quality observations before making a release decision.")
+            "High": "Hold the batch for quality review before release.",
+            "Medium": "Increase sampling and review production conditions.",
+            "Low": "Continue normal monitoring and release checks.",
+        }.get(category, "Collect sufficient production data before making a release decision.")
