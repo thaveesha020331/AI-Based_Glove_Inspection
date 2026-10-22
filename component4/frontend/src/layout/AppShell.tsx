@@ -7,7 +7,8 @@ const navigation = [
   { label: "Sorting System", path: "/sorting-system", icon: <RadioTower size={16} /> },
   { label: "Live Orientation", path: "/live-orientation", icon: <Camera size={16} /> },
   { label: "Live Defect Detection", path: "/live-defects", icon: <ScanSearch size={16} /> },
-  { label: "Defect Analysis", path: "/defects", icon: "◌" }, { label: "Batch Quality", path: "/batches", icon: "✓" },
+  { label: "Defect Analysis", path: "/defects", icon: "◌" },
+  { label: "Batch Quality", path: "/batches", icon: "✓" },
   { label: "Predictive Analytics", path: "/predictions", icon: "⌁" }, { label: "Alerts & Recommendations", path: "/alerts", icon: "!" },
   { label: "Reports", path: "/reports", icon: "▤" }, { label: "Historical Records", path: "/history", icon: "◷" },
   { label: "Data Management", path: "/data-management", icon: "⇅" }, { label: "Settings", path: "/settings", icon: "⚙" },
@@ -29,7 +30,7 @@ export function AppShell() {
           <p className="px-3 pb-3 text-[10px] font-bold uppercase tracking-[.18em] text-slate-400">Workspace</p>
           {navigation.map((item) => <NavLink key={item.path} to={item.path} end={item.path === "/"} onClick={() => setMobileOpen(false)} className={({ isActive }) => `group flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-semibold transition-colors ${isActive ? "bg-[#edf5f8] text-brand" : "text-muted hover:bg-slate-50 hover:text-ink"}`}><span className="grid w-5 place-items-center text-[16px] opacity-80">{item.icon}</span>{item.label}</NavLink>)}
         </nav>
-        <div className="m-3 rounded-xl bg-[#f3f7f8] p-3"><p className="text-xs font-bold text-ink">Demo workspace</p><p className="mt-1 text-[11px] leading-4 text-muted">Figures are sample data for development.</p></div>
+        <div className="m-3 rounded-xl bg-[#f3f7f8] p-3"><p className="text-xs font-bold text-ink">Dataset workspace</p><p className="mt-1 text-[11px] leading-4 text-muted">Analytics are loaded from the configured Flask database.</p></div>
       </aside>
       {mobileOpen && <button className="fixed inset-0 z-30 bg-ink/30 lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation overlay" />}
       <div className="lg:pl-[256px]">
