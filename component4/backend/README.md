@@ -148,6 +148,41 @@ inventing probabilities or evaluation results.
 
 ## Hand-image dataset boundary
 
+## Glove defect detection (Component 4)
+
+The extracted dataset is at `component4\dataset\` and is not moved or modified.
+The verified COCO splits are: train 62 images/79 boxes, valid 17/18, and test
+9/9. Every referenced image exists, dimensions match the JSON, and all boxes
+are positive and inside image bounds. Source category IDs 0 and 3 both carry
+the generic name `defect-Detection`; the conversion preserves those IDs as
+`Other defect`, while IDs 1 and 2 remain `Pinhole` and `Tear`.
+
+Run these exact PowerShell commands from `component4\backend`:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r ml\quality_detection\requirements.txt
+python -m ml.quality_detection.validate_coco --dataset ..\dataset
+python -m ml.quality_detection.train --dataset ..\dataset --epochs 30
+```
+
+Training copies images and generated YOLO labels into
+`backend\ml\quality_detection\yolo_dataset`; original dataset files are never
+overwritten. The script validates on the held-out `test` split and prints the
+Ultralytics evaluation output. Copy the reported `best.pt` to
+`backend\models\glove_defect_model.pt` (or set `DEFECT_MODEL_PATH`).
+
+Detection endpoints are `/api/health`, `/api/predict`, `/api/batches`,
+`/api/batches/<batch_id>/images`, `/api/batches/<batch_id>/summary`, and
+`/api/analytics/overview`. Batch analysis uses normalized image zones and
+explicitly does not claim finger/palm/wrist localization because the COCO
+annotations contain no anatomical region labels.
+
+Start the API with `python -m flask --app run.py db upgrade` followed by
+`python -m flask --app run.py run --debug`. If Ultralytics/model weights are
+not installed, prediction returns HTTP 503 with the exact remediation rather
+than fabricated results.
+
 The Google Drive hand-image dataset is not bundled with this repository. The
 workspace audit found no project image files outside Python and frontend
 dependencies, so no image count, class distribution, dimensions, corruption

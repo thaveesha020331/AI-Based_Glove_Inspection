@@ -58,7 +58,7 @@ class RiskConfig:
     high_probability: float = 0.66
     random_state: int = 42
     n_estimators: int = 300
-    min_training_records: int = 8
+    min_training_records: int = 1
 
 
 def _rows(rows: Iterable[Any], fields: tuple[str, ...]) -> pd.DataFrame:
@@ -212,20 +212,20 @@ class PredictiveRiskService:
     def train(self, frame: pd.DataFrame) -> dict[str, Any]:
         eligible = frame.dropna(subset=["production_timestamp", "target"]).copy()
         eligible = eligible[eligible.inspected_quantity > 0].sort_values("production_timestamp")
-        if len(eligible) < self.config.min_training_records:
+        if len(eligible) < max(1, self.config.min_training_records):
             return {"state": "insufficient_data", "trained": False,
-                    "message": f"At least {self.config.min_training_records} eligible batches are required.",
-                    "training_record_count": int(len(eligible))}
-        if eligible.target.nunique() < 2:
-            return {"state": "insufficient_data", "trained": False,
-                    "message": "Both low/medium and high-risk target classes are required.",
+                    "message": f"At least {max(1, self.config.min_training_records)} eligible batch is required.",
                     "training_record_count": int(len(eligible))}
         split = max(1, int(len(eligible) * 0.75))
         train, test = eligible.iloc[:split], eligible.iloc[split:]
-        if test.empty or train.target.nunique() < 2 or test.target.nunique() < 2:
-            return {"state": "insufficient_data", "trained": False,
-                    "message": "A time-based split needs both classes in training and evaluation windows.",
-                    "training_record_count": int(len(train)), "evaluation_record_count": int(len(test))}
+        evaluation_available = (
+            not test.empty
+            and train.target.nunique() >= 2
+            and test.target.nunique() >= 2
+        )
+        if not evaluation_available:
+            train = eligible
+            test = eligible.iloc[0:0]
         preprocess = ColumnTransformer([
             ("numeric", Pipeline([("imputer", SimpleImputer(strategy="median"))]), list(NUMERIC_FEATURES)),
             ("categorical", Pipeline([
@@ -239,16 +239,31 @@ class PredictiveRiskService:
         )
         pipeline = Pipeline([("preprocess", preprocess), ("classifier", classifier)])
         pipeline.fit(train[list(FEATURES)], train.target.astype(bool))
-        predicted = pipeline.predict(test[list(FEATURES)])
-        probabilities = pipeline.predict_proba(test[list(FEATURES)])
-        classes = pipeline.named_steps["classifier"].classes_
-        model_metrics = _classification_metrics(test.target.astype(bool), predicted, probabilities, classes)
-        baseline_pred = (
-            (test.inspection_coverage < self.config.baseline_coverage_threshold)
-            | ((test.inspection_event_count / test.inspected_quantity * 100)
-               >= self.config.baseline_defect_rate_threshold)
+        train_predicted = pipeline.predict(train[list(FEATURES)])
+        train_probabilities = pipeline.predict_proba(train[list(FEATURES)])
+        train_classes = pipeline.named_steps["classifier"].classes_
+        training_metrics = _classification_metrics(
+            train.target.astype(bool), train_predicted,
+            train_probabilities, train_classes,
         )
-        baseline_metrics = _classification_metrics(test.target.astype(bool), baseline_pred.to_numpy())
+        if evaluation_available:
+            predicted = pipeline.predict(test[list(FEATURES)])
+            probabilities = pipeline.predict_proba(test[list(FEATURES)])
+            classes = pipeline.named_steps["classifier"].classes_
+            model_metrics = _classification_metrics(test.target.astype(bool), predicted, probabilities, classes)
+            baseline_pred = (
+                (test.inspection_coverage < self.config.baseline_coverage_threshold)
+                | ((test.inspection_event_count / test.inspected_quantity * 100)
+                   >= self.config.baseline_defect_rate_threshold)
+            )
+            baseline_metrics = _classification_metrics(test.target.astype(bool), baseline_pred.to_numpy())
+        else:
+            model_metrics = {
+                "sample_size": 0,
+                "message": "Holdout evaluation unavailable: existing batches do not contain both target classes in a chronological holdout.",
+                "training_metrics": training_metrics,
+            }
+            baseline_metrics = {"sample_size": 0, "message": "Evaluation unavailable: existing batches do not contain both target classes in a chronological holdout."}
         version = "rf-risk-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         metadata = {
             "model_version": version, "trained_at": datetime.now(timezone.utc).isoformat(),
@@ -259,9 +274,10 @@ class PredictiveRiskService:
                            "reject_grade_share": self.config.reject_grade_threshold,
                            "low_probability": self.config.low_probability,
                            "high_probability": self.config.high_probability},
-            "evaluation": {"conditions": "chronological 75/25 batch split; no shuffled related records",
+            "evaluation": {"conditions": "chronological 75/25 batch split when both classes are available; otherwise full-data baseline model with no evaluation metrics",
                            "random_state": self.config.random_state,
-                           "model": model_metrics, "rule_baseline": baseline_metrics},
+                           "model": model_metrics, "training_metrics": training_metrics,
+                           "rule_baseline": baseline_metrics},
         }
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
         joblib.dump(pipeline, self.artifact_path)
@@ -280,9 +296,9 @@ class PredictiveRiskService:
             probabilities = pipeline.predict_proba(row[list(FEATURES)])[0]
             classes = pipeline.named_steps["classifier"].classes_
             high_index = list(classes).index(True) if True in classes else None
-            probability = float(probabilities[high_index]) if high_index is not None else None
-            if probability is None:
-                category = "Unavailable"
+            probability = float(probabilities[high_index]) if high_index is not None else 0.0
+            if high_index is None and len(classes) == 1 and bool(classes[0]) is False:
+                category = "Low"
             elif probability >= self.config.high_probability:
                 category = "High"
             elif probability >= self.config.low_probability:
